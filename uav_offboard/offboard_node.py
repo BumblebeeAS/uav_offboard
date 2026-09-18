@@ -39,7 +39,7 @@ class OffboardNode(Node):
         )
         vehicle_local_position_topic = (
             self.declare_parameter(
-                "vehicle_local_position_topic", "/fmu/out/vehicle_local_position"
+                "vehicle_local_position_topic", "/fmu/out/vehicle_local_position_v1"
             )
             .get_parameter_value()
             .string_value

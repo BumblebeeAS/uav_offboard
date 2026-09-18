@@ -6,7 +6,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
-from uav2_offboard.utils.qos_profiles import QOS_PROFILE_SUB
+from uav_offboard.utils.qos_profiles import QOS_PROFILE_SUB
 
 
 class ImuRepubNode(Node):
@@ -14,7 +14,7 @@ class ImuRepubNode(Node):
         super().__init__("imu_repub")
 
         self.sub = self.create_subscription(
-            Odometry, "/uav2/odom_ned", self.callback, QOS_PROFILE_SUB
+            Odometry, "/uav/odom_ned", self.callback, QOS_PROFILE_SUB
         )
 
         self.pub = self.create_publisher(Imu, "/imu", 10)

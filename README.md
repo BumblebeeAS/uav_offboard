@@ -1,4 +1,4 @@
-# UAV2 Offboard
+# UAV Offboard
 
 Offboard package for drone behaviors and missions.
 
@@ -9,25 +9,25 @@ Offboard package for drone behaviors and missions.
 1. In a separate terminal,
 
 ```bash
-ros2 launch uav2_offboard launch.py
+ros2 launch uav_offboard launch.py
 ```
 
 2. Set home
 
 ```bash
-ros2 service call /uav2/offboard_node/set_home std_srvs/srv/Trigger "{}"
+ros2 service call /uav/offboard_node/set_home std_srvs/srv/Trigger "{}"
 ```
 
 3. Takeoff
 
 ```bash
-ros2 action send_goal /uav2/offboard_node/takeoff bb_uav_msgs/action/Takeoff "{altitude: 3.0, x_threshold: 0.1, y_threshold: 0.1, z_threshold: 0.1}" --feedback
+ros2 action send_goal /uav/offboard_node/takeoff bb_uav_msgs/action/Takeoff "{altitude: 3.0, x_threshold: 0.1, y_threshold: 0.1, z_threshold: 0.1}" --feedback
 ```
 
 4. Move
 
 ```bash
-ros2 action send_goal /uav2/offboard_node/go_to_position bb_uav_msgs/action/GoToPosition "{x: 3.0, y: 3.0, z: -2.0, relative: false, x_threshold: 0.1, y_threshold: 0.1, z_threshold: 0.1}" --feedback
+ros2 action send_goal /uav/offboard_node/go_to_position bb_uav_msgs/action/GoToPosition "{x: 3.0, y: 3.0, z: -2.0, relative: false, x_threshold: 0.1, y_threshold: 0.1, z_threshold: 0.1}" --feedback
 ```
 
 5. Land / precision land / return to launch
@@ -35,19 +35,19 @@ ros2 action send_goal /uav2/offboard_node/go_to_position bb_uav_msgs/action/GoTo
 Land:
 
 ```bash
-ros2 service call /uav2/offboard_node/land std_srvs/srv/Trigger "{}"
+ros2 service call /uav/offboard_node/land std_srvs/srv/Trigger "{}"
 ```
 
 Precision land:
 
 ```bash
-ros2 service call /uav2/offboard_node/precision_landing std_srvs/srv/Trigger "{}"
+ros2 service call /uav/offboard_node/precision_landing std_srvs/srv/Trigger "{}"
 ```
 
 Return to launch:
 
 ```bash
-ros2 service call /uav2/offboard_node/rtl std_srvs/srv/Trigger "{}"
+ros2 service call /uav/offboard_node/rtl std_srvs/srv/Trigger "{}"
 ```
 
 ## Usage

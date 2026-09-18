@@ -7,7 +7,7 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
 from px4_msgs.msg import LandingTargetPose, VehicleStatus
-from uav2_offboard.utils.qos_profiles import QOS_PROFILE_PUB, QOS_PROFILE_SUB
+from uav_offboard.utils.qos_profiles import QOS_PROFILE_PUB, QOS_PROFILE_SUB
 
 
 class LandingTargetPoseNode(Node):
@@ -31,7 +31,7 @@ class LandingTargetPoseNode(Node):
 
         # Declare transform frame parameters
         self.source_frame = (
-            self.declare_parameter("source_frame", "uav2/base_link_frd")
+            self.declare_parameter("source_frame", "uav/base_link_frd")
             .get_parameter_value()
             .string_value
         )

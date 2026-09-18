@@ -5,7 +5,7 @@
     vehicle_command_topic: /fmu/in/vehicle_command
     vehicle_local_position_topic: /fmu/out/vehicle_local_position
     vehicle_status_topic: /fmu/out/vehicle_status_v1
-    acceleration_control_topic: /uav2/acceleration_control
+    acceleration_control_topic: /uav/acceleration_control
 
 /**/landing_target_pose_node:
   ros__parameters:
@@ -14,7 +14,7 @@
 
 /**/actuator_control_node:
   ros__parameters:
-    actuation_server_name: /uav2/tins/actuation
+    actuation_server_name: /uav/tins/actuation
     px4_address: udpin://0.0.0.0:14540
     timeout: 5.0
     actuation_indexes: [1, 2]

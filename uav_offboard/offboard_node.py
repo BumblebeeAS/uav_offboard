@@ -20,9 +20,9 @@ from px4_msgs.msg import (
     VehicleLocalPosition,
     VehicleStatus,
 )
-from uav2_offboard.utils.goto import GeneralGoal, is_acceleration_valid
-from uav2_offboard.utils.offboard_mode import OffboardMode
-from uav2_offboard.utils.qos_profiles import QOS_PROFILE_PUB, QOS_PROFILE_SUB
+from uav_offboard.utils.goto import GeneralGoal, is_acceleration_valid
+from uav_offboard.utils.offboard_mode import OffboardMode
+from uav_offboard.utils.qos_profiles import QOS_PROFILE_PUB, QOS_PROFILE_SUB
 
 
 class OffboardNode(Node):
@@ -65,7 +65,7 @@ class OffboardNode(Node):
         )
         acceleration_control_topic = (
             self.declare_parameter(
-                "acceleration_control_topic", "/uav2/acceleration_control"
+                "acceleration_control_topic", "/uav/acceleration_control"
             )
             .get_parameter_value()
             .string_value

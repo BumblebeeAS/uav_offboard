@@ -33,7 +33,7 @@ class ActuatorControlNode(Node):
         self.actuation_server_name = (
             self.declare_parameter(
                 "actuation_server_name",
-                value="/uav2/tins/actuation",
+                value="/uav/tins/actuation",
             )
             .get_parameter_value()
             .string_value

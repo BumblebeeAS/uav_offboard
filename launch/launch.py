@@ -7,27 +7,27 @@ from launch_ros.actions import Node, PushRosNamespace
 
 def generate_launch_description():
     config = os.path.join(
-        get_package_share_directory("uav2_offboard"),
+        get_package_share_directory("uav_offboard"),
         "config",
         "params.yaml",
     )
 
     nodes = [
-        PushRosNamespace("uav2"),
+        PushRosNamespace("uav"),
         Node(
-            package="uav2_offboard",
+            package="uav_offboard",
             executable="offboard_node",
             name="offboard_node",
             parameters=[config],
         ),
         Node(
-            package="uav2_offboard",
+            package="uav_offboard",
             executable="landing_target_pose_node",
             name="landing_target_pose_node",
             parameters=[config],
         ),
         Node(
-            package="uav2_offboard",
+            package="uav_offboard",
             executable="actuator_control_node",
             name="actuator_control_node",
             parameters=[config],

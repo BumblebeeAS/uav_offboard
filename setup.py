@@ -3,7 +3,7 @@ from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = "uav2_offboard"
+package_name = "uav_offboard"
 
 setup(
     name=package_name,
@@ -30,10 +30,10 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "offboard_node = uav2_offboard.offboard_node:main",
-            "landing_target_pose_node = uav2_offboard.landing_target_pose_node:main",
-            "imu_repub = uav2_offboard.imu_repub:main",
-            "actuator_control_node = uav2_offboard.actuator_control_node:main",
+            "offboard_node = uav_offboard.offboard_node:main",
+            "landing_target_pose_node = uav_offboard.landing_target_pose_node:main",
+            "imu_repub = uav_offboard.imu_repub:main",
+            "actuator_control_node = uav_offboard.actuator_control_node:main",
         ],
     },
 )

@@ -6,7 +6,7 @@ import rclpy
 from bb_uav_msgs.action import GoToPosition, Land, Takeoff
 from bb_uav_msgs.msg import GoToFeedback, GoToResult
 from bb_uav_msgs.srv import ChangeOffboardControlMode
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import PoseStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -14,6 +14,7 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 from px4_msgs.msg import (
+    HomePosition,
     OffboardControlMode,
     TrajectorySetpoint,
     VehicleCommand,
@@ -22,7 +23,7 @@ from px4_msgs.msg import (
 )
 from uav_offboard.utils.goto import GeneralGoal, is_acceleration_valid
 from uav_offboard.utils.offboard_mode import OffboardMode
-from uav_offboard.utils.qos_profiles import QOS_PROFILE_PUB, QOS_PROFILE_SUB
+from uav_offboard.utils.qos_profiles import QOS_PROFILE_HOME, QOS_PROFILE_PUB, QOS_PROFILE_SUB
 
 
 class OffboardNode(Node):
@@ -32,6 +33,14 @@ class OffboardNode(Node):
         super().__init__("offboard_node")
 
         # Parameters
+        goal_pose_topic = self.declare_parameter("goal_pose_topic", "goal_pose").value
+        self.goal_pose_frame = self.declare_parameter("goal_pose_frame", "odom_ned").value
+        self.use_home_position = self.declare_parameter(
+            "use_home_position", False
+        ).value
+        home_position_topic = self.declare_parameter(
+            "home_position_topic", "/fmu/out/home_position_v1"
+        ).value
         vehicle_status_topic = (
             self.declare_parameter("vehicle_status_topic", "/fmu/out/vehicle_status")
             .get_parameter_value()
@@ -75,6 +84,10 @@ class OffboardNode(Node):
         self.callback_group = ReentrantCallbackGroup()
 
         # Subscribers
+        self.home_sub = self.create_subscription(
+            HomePosition, home_position_topic, self.home_position_callback,
+            QOS_PROFILE_HOME,
+        )
         self.status_sub = self.create_subscription(
             VehicleStatus,
             vehicle_status_topic,
@@ -95,6 +108,7 @@ class OffboardNode(Node):
         )
 
         # Publishers
+        self.publisher_goal_pose = self.create_publisher(PoseStamped, goal_pose_topic, 10)
         self.publisher_offboard_mode = self.create_publisher(
             OffboardControlMode, offboard_control_mode_topic, QOS_PROFILE_PUB
         )
@@ -118,6 +132,7 @@ class OffboardNode(Node):
         self.arming_state = VehicleStatus.ARMING_STATE_DISARMED
         self.current_position = np.array([0.0, 0.0, 0.0])
         self.position_valid = False
+        self.home_position = None
         self.offboard_mode = OffboardMode()
 
         # Service servers
@@ -242,7 +257,40 @@ class OffboardNode(Node):
     def local_position_callback(self, msg: VehicleLocalPosition):
         """Update current position from vehicle"""
         self.current_position = np.array([msg.x, msg.y, msg.z])
-        self.position_valid = True
+        self.position_valid = bool(
+            msg.xy_valid and msg.z_valid and np.isfinite(self.current_position).all()
+        )
+
+    def home_position_callback(self, msg: HomePosition):
+        """Track PX4 home without changing an already resolved target."""
+        home = np.array([msg.x, msg.y, msg.z])
+        self.home_position = (
+            home if msg.valid_lpos and np.isfinite(home).all() else None
+        )
+
+    @property
+    def feedback_position(self):
+        """Report NED position in the configured absolute-goal frame."""
+        if not self.use_home_position:
+            return self.current_position
+        home = self.home_position
+        if home is None:
+            return np.full(3, np.nan)
+        return self.current_position - home
+
+    def resolve_target(self, goal: GeneralGoal):
+        """Validate references and convert a goal to the PX4 local NED frame."""
+        if not self.position_valid:
+            raise ValueError("Failed to get valid position data")
+        target = np.array([goal.x, goal.y, goal.z])
+        if goal.relative:
+            return self.current_position + target
+        if self.use_home_position:
+            home = self.home_position
+            if home is None:
+                raise ValueError("No valid PX4 home position received")
+            return home + target
+        return target
 
     def acceleration_callback(self, msg: Vector3):
         """Update latest acceleration command from topic"""
@@ -285,12 +333,23 @@ class OffboardNode(Node):
         """Publish trajectory setpoint"""
         assert self.absolute_target is not None
         trajectory_msg = TrajectorySetpoint()
-        trajectory_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        now = self.get_clock().now()
+        trajectory_msg.timestamp = int(now.nanoseconds / 1000)
         trajectory_msg.position[0] = self.absolute_target[0]
         trajectory_msg.position[1] = self.absolute_target[1]
         trajectory_msg.position[2] = self.absolute_target[2]
         trajectory_msg.yaw = float("nan")  # Let PX4 handle yaw
         self.publisher_trajectory.publish(trajectory_msg)
+
+        goal_pose = PoseStamped()
+        goal_pose.header.stamp = now.to_msg()
+        goal_pose.header.frame_id = self.goal_pose_frame
+        goal_pose.pose.position.x = float(trajectory_msg.position[0])
+        goal_pose.pose.position.y = float(trajectory_msg.position[1])
+        goal_pose.pose.position.z = float(trajectory_msg.position[2])
+        # Visualization placeholder: this controller does not command orientation.
+        goal_pose.pose.orientation.w = 1.0
+        self.publisher_goal_pose.publish(goal_pose)
 
     def publish_acceleration_setpoint(self):
         """Publish acceleration setpoint"""
@@ -433,6 +492,12 @@ class OffboardNode(Node):
     # -------------------- Action Server Callbacks --------------------
 
     def validate_goal(self, goal: GeneralGoal) -> bool:
+        # Check now; execution resolves again using the latest reference.
+        try:
+            self.resolve_target(goal)
+        except ValueError as exc:
+            self.get_logger().warn(f"{exc}; rejecting goal")
+            return False
         if goal.x_threshold <= 0 or goal.y_threshold <= 0 or goal.z_threshold <= 0:
             self.get_logger().warn("Invalid thresholds, must be positive")
             return False
@@ -491,27 +556,23 @@ class OffboardNode(Node):
         self.is_goal_active = True
         start_time = self.get_clock().now()
 
-        if not self.position_valid:
-            self.get_logger().error("Failed to get valid position data")
+        # Compute absolute target position from relative or absolute goal
+        try:
+            self.absolute_target = self.resolve_target(goal)
+        except ValueError as exc:
             self.reset_internal_state()
             goal_handle.abort()
             result = GoToResult()
             result.success = False
-            result.message = "Failed to get valid position data"
+            result.message = str(exc)
             return result
-
-        # Compute absolute target position from relative or absolute goal
         if goal.relative:
-            self.absolute_target = self.current_position + np.array(
-                [goal.x, goal.y, goal.z]
-            )
             self.get_logger().info(
                 f"Relative mode: current=({self.current_position[0]:.2f}, {self.current_position[1]:.2f}, {self.current_position[2]:.2f}), "
                 f"offset=({goal.x:.2f}, {goal.y:.2f}, {goal.z:.2f}), "
                 f"absolute_target=({self.absolute_target[0]:.2f}, {self.absolute_target[1]:.2f}, {self.absolute_target[2]:.2f})"
             )
         else:
-            self.absolute_target = np.array([goal.x, goal.y, goal.z])
             self.get_logger().info(
                 f"Absolute mode: target=({self.absolute_target[0]:.2f}, {self.absolute_target[1]:.2f}, {self.absolute_target[2]:.2f})"
             )
@@ -525,9 +586,7 @@ class OffboardNode(Node):
                 goal_handle.canceled()
                 result = GoToResult()
                 result.success = False
-                result.final_x = self.current_position[0]
-                result.final_y = self.current_position[1]
-                result.final_z = self.current_position[2]
+                result.final_x, result.final_y, result.final_z = self.feedback_position
                 result.message = "Goal canceled"
                 self.get_logger().info("Goal canceled")
                 self.reset_internal_state()
@@ -545,9 +604,9 @@ class OffboardNode(Node):
 
             # Publish feedback
             feedback_msg = GoToFeedback()
-            feedback_msg.current_x = self.current_position[0]
-            feedback_msg.current_y = self.current_position[1]
-            feedback_msg.current_z = self.current_position[2]
+            feedback_msg.current_x, feedback_msg.current_y, feedback_msg.current_z = (
+                self.feedback_position
+            )
             feedback_msg.distance_to_goal = float(distance_to_goal)
             publish_feedback_fn(feedback_msg)
 
@@ -560,9 +619,7 @@ class OffboardNode(Node):
                 goal_handle.succeed()
                 result = GoToResult()
                 result.success = True
-                result.final_x = self.current_position[0]
-                result.final_y = self.current_position[1]
-                result.final_z = self.current_position[2]
+                result.final_x, result.final_y, result.final_z = self.feedback_position
                 result.time_elapsed = time_elapsed
                 result.message = "Goal reached successfully"
                 self.get_logger().info(
@@ -680,10 +737,10 @@ class OffboardNode(Node):
                 return Land.Result(result=result)
 
             feedback_msg = GoToFeedback()
-            feedback_msg.current_x = self.current_position[0]
-            feedback_msg.current_y = self.current_position[1]
-            feedback_msg.current_z = self.current_position[2]
-            feedback_msg.distance_to_goal = -self.current_position[2]
+            feedback_msg.current_x, feedback_msg.current_y, feedback_msg.current_z = (
+                self.feedback_position
+            )
+            feedback_msg.distance_to_goal = -feedback_msg.current_z
             goal_handle.publish_feedback(Land.Feedback(feedback=feedback_msg))
 
             # rely on px4 land detector to disarm to indicate landed
@@ -692,9 +749,7 @@ class OffboardNode(Node):
                 result = GoToResult()
                 result.success = True
                 result.message = "Landed successfully"
-                result.final_x = self.current_position[0]
-                result.final_y = self.current_position[1]
-                result.final_z = self.current_position[2]
+                result.final_x, result.final_y, result.final_z = self.feedback_position
                 result.time_elapsed = time_elapsed
                 self.get_logger().info("Landed successfully")
                 self.reset_internal_state()

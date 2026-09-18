@@ -52,6 +52,37 @@ ros2 service call /uav/offboard_node/rtl std_srvs/srv/Trigger "{}"
 
 ## Usage
 
+### Goal visualization
+
+`/uav/goal_pose` shows the position target sent to PX4 while offboard position control is active. It uses the `odom_ned` frame, even for home-relative goals. The orientation is only a display placeholder; it does not command yaw.
+
+```bash
+ros2 topic echo /uav/goal_pose
+```
+
+### Home-relative coordinates
+
+The supplied config enables `use_home_position`. Absolute goals (`relative: false`) are measured from PX4 home in north, east, down coordinates. For example, `(0, 0, -2)` is two metres above home. Relative goals are offsets from the UAV’s position when execution starts. Takeoff altitude is the distance to climb from that position.
+
+Home odometry subtracts the home position from `/uav/odom_ned`, leaving orientation, velocity and covariance unchanged. It also publishes the `odom_ned -> home_ned` transform. Keep the existing raw odometry and body TF publishers running.
+
+Home-relative absolute goals and home odometry need a finite PX4 home position with `valid_lpos: true`. Check that it is available:
+
+```bash
+ros2 topic echo /fmu/out/home_position_v1 px4_msgs/msg/HomePosition --once --qos-reliability best_effort
+```
+
+Some firmware uses `/fmu/out/home_position` without the version suffix. Set `home_position_topic` to match; the home odometry launch also accepts it as an argument. If the topic is missing, add this to the PX4 firmware's `src/modules/uxrce_dds_client/dds_topics.yaml` publications and rebuild with matching `px4_msgs`:
+
+```yaml
+- topic: /fmu/out/home_position
+  type: px4_msgs::msg::HomePosition
+```
+
+Home changes apply to new goals. A running goal keeps its target, while feedback uses the latest home and reports NaN if home is unavailable. Disarming does not reset coordinates, and estimator resets are not compensated for.
+
+The controls converter and planner must use the same frame as absolute goals. Use `/uav/odom_home_ned` and `home_ned` for home-relative control; keep localization and perception on raw odometry. To use raw PX4 coordinates for goals and feedback, set `use_home_position: false` and update the converter's `odom_topic`, `controls_frame` and planner frame checks together. Running the node without the supplied config defaults to raw coordinates.
+
 ### Takeoff
 
 The vehicle can be in any mode for the `Takeoff` action but it must be armed and in "Offboard" flight mode for the `GoToPosition` action.

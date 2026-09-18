@@ -17,3 +17,11 @@ QOS_PROFILE_SUB = QoSProfile(
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
 )
+
+# Home is event-driven; request the retained sample when joining late.
+QOS_PROFILE_HOME = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+)

@@ -109,3 +109,13 @@ For sim, just run the `make` command again. For the real thing, you will need to
 5. The action succeeds when all position errors are within their respective thresholds.
 6. The action aborts if the timeout is reached before arriving at the target.
 7. The action can be canceled at any time.
+
+## Actuator SDK compatibility
+
+The actuator node uses the native MAVSDK 4 asyncio API, with explicit autopilot discovery and `ActionAsync`. It opens the MAVLink connection only when an actuation goal arrives. Actuator indexes and normalized ON/OFF values (`1` / `-1`) are unchanged.
+
+The UAV Docker environment installs MAVSDK 4.0.0 and repairs its Linux wheel's missing `libstdc++.so.6` dependency in `Dockerfile.mavsdk_native`. Use that image when deploying this revision; the old `mavsdk<4` package does not provide the native API. See the [upstream migration guide](https://mavsdk.mavlink.io/main/en/python/migration.html).
+
+This actuator interface uses MAVLink 2 rather than ROS-to-PX4 DDS messages. PX4 documents `MAV_CMD_DO_SET_ACTUATOR` in [v1.14](https://docs.px4.io/v1.14/en/payloads/) and [current firmware](https://docs.px4.io/main/en/payloads/generic_actuator_control); configure the corresponding actuator output functions. This is command compatibility, not a claim that every PX4 release was tested. The rest of `uav_offboard` still needs `px4_msgs` matching the PX4 firmware.
+
+The migration uses Python and rclpy APIs available in Humble (Python 3.10), Jazzy and Lyrical (Python 3.12). Lyrical on Ubuntu 24.04/aarch64 was tested; Humble and Jazzy remain untested. Four mocked tests cover connection reuse, discovery timeout and ON/OFF actuator mapping. Native import and ROS node startup/shutdown passed without opening a vehicle connection; no actuator commands were sent during validation.

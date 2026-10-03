@@ -496,14 +496,14 @@ class OffboardNode(Node):
         try:
             self.resolve_target(goal)
         except ValueError as exc:
-            self.get_logger().warn(f"{exc}; rejecting goal")
+            self.get_logger().warning(f"{exc}; rejecting goal")
             return False
         if goal.x_threshold <= 0 or goal.y_threshold <= 0 or goal.z_threshold <= 0:
-            self.get_logger().warn("Invalid thresholds, must be positive")
+            self.get_logger().warning("Invalid thresholds, must be positive")
             return False
 
         if self.is_goal_active:
-            self.get_logger().warn("Another goal is in progress; rejecting...")
+            self.get_logger().warning("Another goal is in progress; rejecting...")
             return False
 
         return True
@@ -525,7 +525,7 @@ class OffboardNode(Node):
         )
 
         if goal_request.altitude <= 0:
-            self.get_logger().warn("Invalid altitude: must be positive meters")
+            self.get_logger().warning("Invalid altitude: must be positive meters")
             return GoalResponse.REJECT
 
         is_valid_goal = self.validate_goal(GeneralGoal.from_takeoff_goal(goal_request))
@@ -536,7 +536,7 @@ class OffboardNode(Node):
         self.get_logger().info("Received land request")
 
         if self.is_goal_active:
-            self.get_logger().warn("Another goal is in progress; rejecting...")
+            self.get_logger().warning("Another goal is in progress; rejecting...")
             return GoalResponse.REJECT
 
         return GoalResponse.ACCEPT

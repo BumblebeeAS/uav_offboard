@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from nav_msgs.msg import Odometry
 from px4_msgs.msg import HomePosition
+from rclpy.impl.rcutils_logger import RcutilsLogger
 
 from uav_offboard.home_odometry_node import (
     HomeOdometryNode, home_transform, to_home_odometry,
@@ -60,7 +61,8 @@ def test_tf_reconstructs_raw_pose():
 def test_callbacks_gate_output_and_follow_home_changes():
     node = SimpleNamespace(
         home=None, local_frame='odom_ned', home_frame='home_ned',
-        publisher=Mock(), broadcaster=Mock(), get_logger=Mock(),
+        publisher=Mock(), broadcaster=Mock(),
+        get_logger=Mock(return_value=Mock(spec_set=RcutilsLogger)),
     )
     raw = sample_odom()
     HomeOdometryNode.odom_callback(node, raw)

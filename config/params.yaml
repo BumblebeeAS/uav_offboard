@@ -2,10 +2,24 @@
   ros__parameters:
     offboard_control_mode_topic: /fmu/in/offboard_control_mode
     trajectory_setpoint_topic: /fmu/in/trajectory_setpoint
+    goal_pose_topic: /uav/goal_pose
+    goal_pose_frame: odom_ned
     vehicle_command_topic: /fmu/in/vehicle_command
-    vehicle_local_position_topic: /fmu/out/vehicle_local_position
+    vehicle_local_position_topic: /fmu/out/vehicle_local_position_v1
+    # Match the mission planner's home_ned controls frame.
+    use_home_position: true
+    # Match the topic exposed by your firmware (some versions omit _v1).
+    home_position_topic: /fmu/out/home_position_v1
     vehicle_status_topic: /fmu/out/vehicle_status_v1
     acceleration_control_topic: /uav/acceleration_control
+
+/**/home_odometry_node:
+  ros__parameters:
+    odom_topic: odom_ned
+    output_topic: odom_home_ned
+    home_position_topic: /fmu/out/home_position_v1
+    local_frame: odom_ned
+    home_frame: home_ned
 
 /**/landing_target_pose_node:
   ros__parameters:

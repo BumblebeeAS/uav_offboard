@@ -29,6 +29,7 @@ setup(
     license="TODO: License declaration",
     entry_points={
         "console_scripts": [
+            "home_odometry_node = uav_offboard.home_odometry_node:main",
             "offboard_node = uav_offboard.offboard_node:main",
             "landing_target_pose_node = uav_offboard.landing_target_pose_node:main",
             "imu_repub = uav_offboard.imu_repub:main",

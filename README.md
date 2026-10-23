@@ -4,15 +4,15 @@ Offboard package for drone behaviors and missions.
 
 ## Quickstart
 
-0. Ensure that **PX4 is running** and connected via XRCE-DDS.
+0. Start PX4 and connect it via XRCE-DDS. Use `px4_msgs` matching the firmware.
 
-1. In a separate terminal,
+1. Launch the nodes:
 
 ```bash
 ros2 launch uav_offboard launch.py
 ```
 
-2. Set home
+2. Set home to the current position:
 
 ```bash
 ros2 service call /uav/offboard_node/set_home std_srvs/srv/Trigger "{}"
@@ -35,7 +35,7 @@ ros2 action send_goal /uav/offboard_node/go_to_position bb_uav_msgs/action/GoToP
 Land:
 
 ```bash
-ros2 service call /uav/offboard_node/land std_srvs/srv/Trigger "{}"
+ros2 action send_goal /uav/offboard_node/land bb_uav_msgs/action/Land "{timeout: 60.0}" --feedback
 ```
 
 Precision land:
@@ -54,7 +54,7 @@ ros2 service call /uav/offboard_node/rtl std_srvs/srv/Trigger "{}"
 
 ### Goal visualization
 
-`/uav/goal_pose` shows the position target sent to PX4 while offboard position control is active. It uses the `odom_ned` frame, even for home-relative goals. The orientation is only a display placeholder; it does not command yaw.
+`/uav/goal_pose` displays the position target sent to PX4 in `odom_ned`, including for home-relative goals. Its orientation does not command yaw.
 
 ```bash
 ros2 topic echo /uav/goal_pose
@@ -62,60 +62,56 @@ ros2 topic echo /uav/goal_pose
 
 ### Home-relative coordinates
 
-The supplied config enables `use_home_position`. Absolute goals (`relative: false`) are measured from PX4 home in north, east, down coordinates. For example, `(0, 0, -2)` is two metres above home. Relative goals are offsets from the UAV’s position when execution starts. Takeoff altitude is the distance to climb from that position.
+The supplied config enables `use_home_position`. Absolute goals (`relative: false`) use north, east, down coordinates relative to PX4 home: `(0, 0, -2)` is two metres above home. Relative goals use offsets from the position at execution start. Takeoff altitude is the climb distance from that position.
 
-Home odometry subtracts the home position from `/uav/odom_ned`, leaving orientation, velocity and covariance unchanged. It also publishes the `odom_ned -> home_ned` transform. Keep the existing raw odometry and body TF publishers running.
+To publish `/uav/odom_home_ned` and the `odom_ned -> home_ned` transform, run the home odometry node alongside the existing raw odometry and body TF publishers:
 
-Home-relative absolute goals and home odometry need a finite PX4 home position with `valid_lpos: true`. Check that it is available:
+```bash
+ros2 launch uav_offboard home_odometry.launch.py
+```
+
+Home odometry subtracts the home position from `/uav/odom_ned`, preserving orientation, velocity and covariance.
+
+Home-relative absolute goals and home odometry require finite home coordinates with `valid_lpos: true`. Check the home topic:
 
 ```bash
 ros2 topic echo /fmu/out/home_position_v1 px4_msgs/msg/HomePosition --once --qos-reliability best_effort
 ```
 
-Some firmware uses `/fmu/out/home_position` without the version suffix. Set `home_position_topic` to match; the home odometry launch also accepts it as an argument. If the topic is missing, add this to the PX4 firmware's `src/modules/uxrce_dds_client/dds_topics.yaml` publications and rebuild with matching `px4_msgs`:
+Set `home_position_topic` to match your firmware; it may omit `_v1`. The home odometry launch also accepts this parameter as an argument. If the topic is missing, add it to the publications in PX4's `src/modules/uxrce_dds_client/dds_topics.yaml` and rebuild:
 
 ```yaml
 - topic: /fmu/out/home_position
   type: px4_msgs::msg::HomePosition
 ```
 
-Home changes apply to new goals. A running goal keeps its target, while feedback uses the latest home and reports NaN if home is unavailable. Disarming does not reset coordinates, and estimator resets are not compensated for.
+Running goals keep their target when home changes. Feedback uses the latest home and reports NaN if it is unavailable. Disarming does not reset coordinates; estimator resets are not compensated for.
 
-The controls converter and planner must use the same frame as absolute goals. Use `/uav/odom_home_ned` and `home_ned` for home-relative control; keep localization and perception on raw odometry. To use raw PX4 coordinates for goals and feedback, set `use_home_position: false` and update the converter's `odom_topic`, `controls_frame` and planner frame checks together. Running the node without the supplied config defaults to raw coordinates.
+Home-relative odometry uses `/uav/odom_home_ned` and the `home_ned` frame. Set `use_home_position: false` to use raw PX4 coordinates for goals and feedback. Raw coordinates are the default without the supplied config.
 
 ### Takeoff
 
-The vehicle can be in any mode for the `Takeoff` action but it must be armed and in "Offboard" flight mode for the `GoToPosition` action.
+`Takeoff` sends arm and Offboard mode commands before climbing. `GoToPosition` requires the vehicle to be armed and in Offboard position control. Both require valid local position data.
 
 ### Landing
 
-Note that, by default, "Return to Launch" (RTL) returns the UAV to its **takeoff position** (not the position where the PX4 Flight Controller is turned on). This return position can be overridden by the `set_home` action.
+The `rtl` service sends PX4 a return-to-launch command. The `set_home` service sets PX4 home to the current position.
 
-For "Precision Landing" to work, add the following to `src/modules/uxrce_dds_client/dds_topics.yaml` in the `PX4-Autopilot` directory:
+For precision landing, add the following to the subscriptions in PX4's `src/modules/uxrce_dds_client/dds_topics.yaml`:
 
 ```yaml
 - topic: /fmu/in/landing_target_pose
   type: px4_msgs::msg::LandingTargetPose
 ```
 
-For sim, just run the `make` command again. For the real thing, you will need to flash the PX4 firmware.
+Rebuild PX4 for simulation, or rebuild and flash the firmware for hardware.
 
 ## How It Works
 
-1. The offboard node continuously publishes `OffboardControlMode` messages at 50 Hz to maintain offboard mode. It serves as a "heartbeat".
-2. When a goal is received, it starts commanding the target position via `TrajectorySetpoint` messages.
-3. It monitors the vehicle's current position from `VehicleLocalPosition` messages.
-4. Feedback is published showing current position, distance to goal, and time remaining.
-5. The action succeeds when all position errors are within their respective thresholds.
-6. The action aborts if the timeout is reached before arriving at the target.
-7. The action can be canceled at any time.
+The offboard node publishes `OffboardControlMode` at 50 Hz. During an active position goal, it sends `TrajectorySetpoint` commands while the vehicle is armed and in Offboard position control.
 
-## Actuator SDK compatibility
+`Takeoff` and `GoToPosition` use `VehicleLocalPosition` to track progress and report position and distance feedback. They succeed when all axis errors meet their thresholds, and support cancellation. Neither has a goal timeout. The `Land` action accepts a timeout and completes when the vehicle disarms.
 
-The actuator node uses the native MAVSDK 4 asyncio API, with explicit autopilot discovery and `ActionAsync`. It opens the MAVLink connection only when an actuation goal arrives. Actuator indexes and normalized ON/OFF values (`1` / `-1`) are unchanged.
+## Actuator control
 
-The UAV Docker environment installs MAVSDK 4.0.0 and repairs its Linux wheel's missing `libstdc++.so.6` dependency in `Dockerfile.mavsdk_native`. Use that image when deploying this revision; the old `mavsdk<4` package does not provide the native API. See the [upstream migration guide](https://mavsdk.mavlink.io/main/en/python/migration.html).
-
-This actuator interface uses MAVLink 2 rather than ROS-to-PX4 DDS messages. PX4 documents `MAV_CMD_DO_SET_ACTUATOR` in [v1.14](https://docs.px4.io/v1.14/en/payloads/) and [current firmware](https://docs.px4.io/main/en/payloads/generic_actuator_control); configure the corresponding actuator output functions. This is command compatibility, not a claim that every PX4 release was tested. The rest of `uav_offboard` still needs `px4_msgs` matching the PX4 firmware.
-
-The migration uses Python and rclpy APIs available in Humble (Python 3.10), Jazzy and Lyrical (Python 3.12). Lyrical on Ubuntu 24.04/aarch64 was tested; Humble and Jazzy remain untested. Four mocked tests cover connection reuse, discovery timeout and ON/OFF actuator mapping. Native import and ROS node startup/shutdown passed without opening a vehicle connection; no actuator commands were sent during validation.
+The actuator node requires native MAVSDK 4 and a MAVLink 2 connection to PX4. Configure PX4 actuator output functions for `MAV_CMD_DO_SET_ACTUATOR`. The `actuation_indexes` parameter selects the actuators; ON sends `1` and OFF sends `-1`.

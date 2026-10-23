@@ -7,7 +7,8 @@ from typing import Dict, Optional
 
 import rclpy
 from bb_uav_msgs.action import Actuation
-from mavsdk import System
+from mavsdk.asyncio import ComponentType, Configuration, Mavsdk
+from mavsdk.asyncio.plugins.action import ActionAsync
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -69,7 +70,12 @@ class ActuatorControlNode(Node):
         )
 
         # MAVSDK
-        self.drone = System()
+        self.mavsdk = Mavsdk(
+            Configuration.create_with_component_type(ComponentType.COMPANION_COMPUTER)
+        )
+        self.drone = None
+        self.action = None
+        self.connection_added = False
         self.connection_future: Optional[Future] = None
         # self.is_connected = False
 
@@ -96,24 +102,28 @@ class ActuatorControlNode(Node):
         return asyncio.run_coroutine_threadsafe(coro, self.async_loop)
 
     async def _connect(self):
-        # if self.is_connected:
-        #     return True
+        if not self.connection_added:
+            self.get_logger().info(f"Connecting to PX4 at {self.address}...")
+            await self.mavsdk.add_any_connection(self.address)
+            self.connection_added = True
 
-        self.get_logger().info(f"Connecting to PX4 at {self.address}...")
-        await self.drone.connect(system_address=self.address)
+        if self.drone is None or not await self.drone.is_connected():
+            drone = await self.mavsdk.first_autopilot(self.timeout)
+            if drone is None:
+                raise TimeoutError("No PX4 autopilot discovered")
+            if self.action is not None:
+                self.action.destroy()
+            self.drone = drone
+            self.action = ActionAsync(drone)
         self.get_logger().info("Connected to PX4")
         return True
 
     async def _check_connection(self):
-        """Continuously watch the connection state until trued"""
-        async for state in self.drone.core.connection_state():
-            if state.is_connected:
-                return True
-            self.get_logger().info("Connection state: not connected")
+        return self.drone is not None and await self.drone.is_connected()
 
     async def _actuate(self, enable: bool):
         tasks = [
-            self.drone.action.set_actuator(
+            self.action.set_actuator(
                 idx,
                 self.ON if enable else self.OFF,
             )
@@ -208,19 +218,33 @@ class ActuatorControlNode(Node):
             return result
 
         finally:
-            self.running_tasks.pop(goal_id, None)
+            pending = self.running_tasks.pop(goal_id, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
+            if self.connection_future is not None and not self.connection_future.done():
+                self.connection_future.cancel()
             self.connection_future = None
             # self.is_connected = False # TODO: see if want to not force the connect everytime
+
+    async def _shutdown_mavsdk(self):
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await self.async_loop.shutdown_default_executor()
+        if self.action is not None:
+            self.action.destroy()
+        self.mavsdk.destroy()
 
     def destroy_node(self):
         self.get_logger().info("Shutting down actuator control node")
 
+        self._run_async(self._shutdown_mavsdk()).result()
         self.async_loop.call_soon_threadsafe(self.async_loop.stop)
         self.get_logger().info("Waiting for async event loop thread to finish...")
         self.async_thread.join()
 
-        while self.async_loop.is_running():
-            pass
+        self.async_loop.close()
 
         super().destroy_node()
 

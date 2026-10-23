@@ -27,7 +27,6 @@ setup(
     maintainer_email="todo@todo.com",
     description="TODO: Package description",
     license="TODO: License declaration",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "home_odometry_node = uav_offboard.home_odometry_node:main",

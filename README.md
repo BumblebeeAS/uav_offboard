@@ -109,3 +109,7 @@ For sim, just run the `make` command again. For the real thing, you will need to
 5. The action succeeds when all position errors are within their respective thresholds.
 6. The action aborts if the timeout is reached before arriving at the target.
 7. The action can be canceled at any time.
+
+## Actuator control
+
+The actuator node requires native MAVSDK 4 and uses MAVLink to control PX4 actuators. Actuator indexes and ON/OFF values (`1` / `-1`) are unchanged.

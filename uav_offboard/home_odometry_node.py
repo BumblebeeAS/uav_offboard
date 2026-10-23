@@ -74,7 +74,7 @@ class HomeOdometryNode(Node):
         """Publish the translated odometry and the matching origin transform."""
         home = self.home
         if home is None:
-            self.get_logger().warn('Waiting for valid PX4 local home', throttle_duration_sec=5.0)
+            self.get_logger().warning('Waiting for valid PX4 local home', throttle_duration_sec=5.0)
             return
         if msg.header.frame_id != self.local_frame:
             self.get_logger().error(

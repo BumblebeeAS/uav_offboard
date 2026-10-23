@@ -119,7 +119,7 @@ class LandingTargetPoseNode(Node):
             )
 
         except TransformException as ex:
-            self.get_logger().warn(
+            self.get_logger().warning(
                 f"Could not get transform from '{self.source_frame}' to '{self.target_frame}': {ex}",
                 throttle_duration_sec=5.0,
             )

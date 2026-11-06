@@ -57,8 +57,13 @@ class HomeOdometryNode(Node):
         if self.local_frame == self.home_frame:
             raise ValueError('Local and home frames must differ')
         self.home = None
+        tf_rate = self.declare_parameter('tf_publish_rate', 15.0).value
+        if not isfinite(tf_rate) or tf_rate <= 0.0:
+            raise ValueError('tf_publish_rate must be finite and positive')
+        self.pending_transform = None
         self.publisher = self.create_publisher(Odometry, output_topic, 10)
         self.broadcaster = TransformBroadcaster(self)
+        self.tf_timer = self.create_timer(1.0 / tf_rate, self.publish_tf)
         self.home_sub = self.create_subscription(
             HomePosition, home_topic, self.home_callback, QOS_PROFILE_HOME
         )
@@ -69,6 +74,15 @@ class HomeOdometryNode(Node):
     def home_callback(self, msg):
         """Invalidate the reference if PX4 reports that home is unavailable."""
         self.home = msg if valid_home(msg) else None
+        if self.home is None:
+            self.pending_transform = None
+
+    def publish_tf(self):
+        """Send each latest transform once, retaining its odometry timestamp."""
+        pending = self.pending_transform
+        self.pending_transform = None
+        if pending is not None:
+            self.broadcaster.sendTransform(pending)
 
     def odom_callback(self, msg):
         """Publish the translated odometry and the matching origin transform."""
@@ -84,7 +98,7 @@ class HomeOdometryNode(Node):
             return
         self.publisher.publish(to_home_odometry(msg, home, self.home_frame))
         # Keep the existing local -> body TF publisher as the sole body authority.
-        self.broadcaster.sendTransform(home_transform(msg, home, self.home_frame))
+        self.pending_transform = home_transform(msg, home, self.home_frame)
 
 
 def main(args=None):

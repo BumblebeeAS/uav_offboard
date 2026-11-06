@@ -66,6 +66,8 @@ The supplied config enables `use_home_position`. Absolute goals (`relative: fals
 
 Home odometry subtracts the home position from `/uav/odom_ned`, leaving orientation, velocity and covariance unchanged. It also publishes the `odom_ned -> home_ned` transform. Keep the existing raw odometry and body TF publishers running.
 
+The UAV publishes odometry at up to 30 Hz (`odom_publish_rate`) and body/home TF at up to 15 Hz (`publish_rate` / `tf_publish_rate`). Geographic-reference output is limited to 15 Hz (`reference_publish_rate`). Odometry and TF retain the received sample timestamp; pending samples are published once, so stopped inputs are not replayed. Incoming PX4 DDS rates are unchanged.
+
 Home-relative absolute goals and home odometry need a finite PX4 home position with `valid_lpos: true`. Check that it is available:
 
 ```bash

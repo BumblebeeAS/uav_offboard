@@ -13,6 +13,7 @@ def make_node():
             add_any_connection=AsyncMock(), first_autopilot=AsyncMock()
         ),
         drone=None, action=None, connection_added=False,
+        connection_lock=asyncio.Lock(),
         address="udpin://127.0.0.1:14540", timeout=0.1,
         get_logger=lambda: Mock(),
     )

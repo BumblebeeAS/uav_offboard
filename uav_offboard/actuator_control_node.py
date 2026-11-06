@@ -25,7 +25,7 @@ class ActuatorControlNode(Node):
         self.address = (
             self.declare_parameter(
                 "px4_address",
-                value="udpin://0.0.0:14540",
+                value="udpin://0.0.0.0:14540",
             )
             .get_parameter_value()
             .string_value
@@ -76,6 +76,8 @@ class ActuatorControlNode(Node):
         self.drone = None
         self.action = None
         self.connection_added = False
+        # Prevent actuator and geofence requests from connecting simultaneously.
+        self.connection_lock = asyncio.Lock()
         self.connection_future: Optional[Future] = None
         # self.is_connected = False
 
@@ -102,21 +104,22 @@ class ActuatorControlNode(Node):
         return asyncio.run_coroutine_threadsafe(coro, self.async_loop)
 
     async def _connect(self):
-        if not self.connection_added:
-            self.get_logger().info(f"Connecting to PX4 at {self.address}...")
-            await self.mavsdk.add_any_connection(self.address)
-            self.connection_added = True
+        async with self.connection_lock:
+            if not self.connection_added:
+                self.get_logger().info(f"Connecting to PX4 at {self.address}...")
+                await self.mavsdk.add_any_connection(self.address)
+                self.connection_added = True
 
-        if self.drone is None or not await self.drone.is_connected():
-            drone = await self.mavsdk.first_autopilot(self.timeout)
-            if drone is None:
-                raise TimeoutError("No PX4 autopilot discovered")
-            if self.action is not None:
-                self.action.destroy()
-            self.drone = drone
-            self.action = ActionAsync(drone)
-        self.get_logger().info("Connected to PX4")
-        return True
+            if self.drone is None or not await self.drone.is_connected():
+                drone = await self.mavsdk.first_autopilot(self.timeout)
+                if drone is None:
+                    raise TimeoutError("No PX4 autopilot discovered")
+                if self.action is not None:
+                    self.action.destroy()
+                self.drone = drone
+                self.action = ActionAsync(drone)
+            self.get_logger().info("Connected to PX4")
+            return True
 
     async def _check_connection(self):
         return self.drone is not None and await self.drone.is_connected()

@@ -113,3 +113,13 @@ For sim, just run the `make` command again. For the real thing, you will need to
 ## Actuator control
 
 The actuator node requires native MAVSDK 4 and uses MAVLink to control PX4 actuators. Actuator indexes and ON/OFF values (`1` / `-1`) are unchanged.
+
+## Geofence boundary
+
+The actuator node publishes PX4's uploaded polygons and circles on `/uav/geofence` every second. Coordinates are WGS84; circle radii are in metres. PX4's parameter-based distance and altitude limits are excluded.
+
+```bash
+ros2 topic echo /uav/geofence --qos-durability transient_local
+```
+
+Check `stamp` for freshness: failed downloads retain the previous fence and timestamp. Empty arrays mean no uploaded fence. Set `publish_geofence:=false` to disable polling.

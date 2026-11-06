@@ -13,6 +13,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from uav_offboard.geofence import GeofencePublisher
 
 
 class ActuatorControlNode(Node):
@@ -69,6 +70,10 @@ class ActuatorControlNode(Node):
             callback_group=ReentrantCallbackGroup(),
         )
 
+        self.geofence_publisher = None
+        if self.declare_parameter("publish_geofence", True).value:
+            self.geofence_publisher = GeofencePublisher(self, self._geofence_drone)
+
         # MAVSDK
         self.mavsdk = Mavsdk(
             Configuration.create_with_component_type(ComponentType.COMPANION_COMPUTER)
@@ -90,6 +95,8 @@ class ActuatorControlNode(Node):
         self.async_thread.start()
 
         self.running_tasks: Dict[str, Future] = {}
+        if self.geofence_publisher is not None:
+            self._run_async(self.geofence_publisher.run())
 
         self.get_logger().info("Actuator control node started")
 
@@ -120,6 +127,10 @@ class ActuatorControlNode(Node):
                 self.action = ActionAsync(drone)
             self.get_logger().info("Connected to PX4")
             return True
+
+    async def _geofence_drone(self):
+        await self._connect()
+        return self.drone
 
     async def _check_connection(self):
         return self.drone is not None and await self.drone.is_connected()

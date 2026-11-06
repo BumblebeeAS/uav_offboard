@@ -32,3 +32,7 @@
     px4_address: udpin://0.0.0.0:14540
     timeout: 5.0
     actuation_indexes: [1, 2]
+    publish_geofence: true
+    geofence_topic: geofence
+    geofence_refresh_interval: 1.0
+    geofence_download_timeout: 15.0

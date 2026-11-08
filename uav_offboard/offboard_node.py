@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+import math
+import time
 from typing import Callable
 
 import numpy as np
 import rclpy
-from bb_uav_msgs.action import GoToPosition, Land, Takeoff
+from bb_uav_msgs.action import SpiralSearch, GoToPosition, Land, Takeoff
 from bb_uav_msgs.msg import GoToFeedback, GoToResult
 from bb_uav_msgs.srv import ChangeOffboardControlMode
 from geometry_msgs.msg import PoseStamped, Vector3
@@ -21,6 +23,7 @@ from px4_msgs.msg import (
     VehicleLocalPosition,
     VehicleStatus,
 )
+from uav_offboard.utils.spiral_search import SpiralPath
 from uav_offboard.utils.goto import GeneralGoal, is_acceleration_valid
 from uav_offboard.utils.offboard_mode import OffboardMode
 from uav_offboard.utils.qos_profiles import QOS_PROFILE_HOME, QOS_PROFILE_PUB, QOS_PROFILE_SUB
@@ -159,6 +162,13 @@ class OffboardNode(Node):
             cancel_callback=self.cancel_callback,
             callback_group=self.callback_group,
         )
+        self._spiral_search_action_server = ActionServer(
+            self, SpiralSearch, "~/spiral_search",
+            execute_callback=self.execute_spiral_search_callback,
+            goal_callback=self.spiral_search_goal_callback,
+            cancel_callback=self.cancel_callback,
+            callback_group=self.callback_group,
+        )
         self._takeoff_action_server = ActionServer(
             self,
             Takeoff,
@@ -257,6 +267,7 @@ class OffboardNode(Node):
     def local_position_callback(self, msg: VehicleLocalPosition):
         """Update current position from vehicle"""
         self.current_position = np.array([msg.x, msg.y, msg.z])
+        self._position_received_at = time.monotonic()
         self.position_valid = bool(
             msg.xy_valid and msg.z_valid and np.isfinite(self.current_position).all()
         )
@@ -330,14 +341,20 @@ class OffboardNode(Node):
                 self.publish_acceleration_setpoint()
 
     def publish_trajectory_setpoint(self):
-        """Publish trajectory setpoint"""
-        assert self.absolute_target is not None
+        """Publish one coherent target despite concurrent action cleanup."""
+        # Actions and the timer use a reentrant callback group. Cleanup can clear
+        # absolute_target after control_loop_callback checks it, or between XYZ
+        # reads here. Capture the array reference once and use one snapshot.
+        target = self.absolute_target
+        if target is None:
+            return
+        target = target.copy()
         trajectory_msg = TrajectorySetpoint()
         now = self.get_clock().now()
         trajectory_msg.timestamp = int(now.nanoseconds / 1000)
-        trajectory_msg.position[0] = self.absolute_target[0]
-        trajectory_msg.position[1] = self.absolute_target[1]
-        trajectory_msg.position[2] = self.absolute_target[2]
+        trajectory_msg.position[0] = target[0]
+        trajectory_msg.position[1] = target[1]
+        trajectory_msg.position[2] = target[2]
         trajectory_msg.yaw = float("nan")  # Let PX4 handle yaw
         self.publisher_trajectory.publish(trajectory_msg)
 
@@ -498,6 +515,10 @@ class OffboardNode(Node):
         except ValueError as exc:
             self.get_logger().warning(f"{exc}; rejecting goal")
             return False
+        duration = getattr(goal, "duration", 0.0)
+        if not math.isfinite(duration) or duration < 0.0:
+            self.get_logger().warning("Invalid goto duration; must be finite and nonnegative")
+            return False
         if goal.x_threshold <= 0 or goal.y_threshold <= 0 or goal.z_threshold <= 0:
             self.get_logger().warning("Invalid thresholds, must be positive")
             return False
@@ -517,6 +538,84 @@ class OffboardNode(Node):
 
         is_goal_valid = self.validate_goal(GeneralGoal.from_position_goal(goal_request))
         return GoalResponse.ACCEPT if is_goal_valid else GoalResponse.REJECT
+
+    def _sweep_position_valid(self):
+        received = getattr(self, "_position_received_at", None)
+        return (self.position_valid and received is not None
+                and time.monotonic() - received <= 1.0)
+
+    def spiral_search_goal_callback(self, request):
+        values = (request.radius, request.turn_spacing, request.speed,
+                  request.settle_threshold, request.settle_timeout)
+        if (not all(math.isfinite(v) and v > 0 for v in values)
+                or request.turn_spacing > 2 * request.radius
+                or not self._sweep_position_valid() or self.is_goal_active
+                or not self.offboard_mode.is_position):
+            self.get_logger().warning("Rejecting spiral: invalid parameters/state or busy")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    async def execute_spiral_search_callback(self, goal_handle):
+        """Use the normal Offboard publisher and drain cancellation before approach."""
+        request = goal_handle.request
+        result = GoToResult(success=False)
+        rate = None
+        self.is_goal_active = True
+        try:
+            if not self._sweep_position_valid():
+                raise ValueError("Spiral requires fresh valid local position")
+            centre = self.current_position.copy()
+            path = SpiralPath(request.radius, request.turn_spacing, request.speed)
+            endpoint = centre + path.offset(path.duration)
+            start = self.get_clock().now()
+            rate = self.create_rate(50)
+            self.absolute_target = centre.copy()
+            self.get_logger().info(
+                f"Spiral search: radius={request.radius:g} m, spacing={request.turn_spacing:g} m, "
+                f"speed<={request.speed:g} m/s, duration={path.duration:.1f} s")
+            while rclpy.ok():
+                elapsed = (self.get_clock().now() - start).nanoseconds / 1e9
+                result.time_elapsed = elapsed
+                result.final_x, result.final_y, result.final_z = self.feedback_position
+                if goal_handle.is_cancel_requested:
+                    # Replace the moving target with measured XY before acknowledging.
+                    # Keep the search altitude; don't continue toward an old spiral point.
+                    if (self._sweep_position_valid()
+                            and self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+                            and self.arming_state == VehicleStatus.ARMING_STATE_ARMED):
+                        self.absolute_target = self.current_position.copy()
+                        self.absolute_target[2] = centre[2]
+                        self.publish_trajectory_setpoint()
+                    result.message = "Spiral search canceled; holding current XY"
+                    goal_handle.canceled()
+                    return SpiralSearch.Result(result=result)
+                if not self._sweep_position_valid():
+                    raise ValueError("Lost fresh valid position during spiral")
+                self.absolute_target = centre + path.offset(elapsed)
+                distance = float(np.linalg.norm(self.absolute_target - self.current_position))
+                goal_handle.publish_feedback(SpiralSearch.Feedback(feedback=GoToFeedback(
+                    current_x=float(self.feedback_position[0]),
+                    current_y=float(self.feedback_position[1]),
+                    current_z=float(self.feedback_position[2]), distance_to_goal=distance)))
+                if elapsed >= path.duration:
+                    if np.all(np.abs(self.current_position - endpoint) <= request.settle_threshold):
+                        result.success = True
+                        result.message = "Spiral search complete"
+                        goal_handle.succeed()
+                        return SpiralSearch.Result(result=result)
+                    if elapsed > path.duration + request.settle_timeout:
+                        raise ValueError("Spiral timed out settling at endpoint")
+                rate.sleep()
+            raise ValueError("Spiral interrupted by shutdown")
+        except Exception as exc:
+            result.message = str(exc)
+            self.get_logger().warning(result.message)
+            goal_handle.abort()
+            return SpiralSearch.Result(result=result)
+        finally:
+            self.reset_internal_state()
+            if rate is not None:
+                self.destroy_rate(rate)
 
     def takeoff_goal_callback(self, goal_request: Takeoff.Goal):
         """Accept or reject a Takeoff goal"""
@@ -566,15 +665,22 @@ class OffboardNode(Node):
             result.success = False
             result.message = str(exc)
             return result
+        endpoint = self.absolute_target.copy()
+        trajectory_start = self.current_position.copy()
+        duration = getattr(goal, "duration", 0.0)
+        if duration > 0.0:
+            # Begin at the measured position, avoiding an endpoint jump before
+            # the first trajectory update. Existing goals keep duration=0.
+            self.absolute_target = trajectory_start.copy()
         if goal.relative:
             self.get_logger().info(
                 f"Relative mode: current=({self.current_position[0]:.2f}, {self.current_position[1]:.2f}, {self.current_position[2]:.2f}), "
                 f"offset=({goal.x:.2f}, {goal.y:.2f}, {goal.z:.2f}), "
-                f"absolute_target=({self.absolute_target[0]:.2f}, {self.absolute_target[1]:.2f}, {self.absolute_target[2]:.2f})"
+                f"absolute_target=({endpoint[0]:.2f}, {endpoint[1]:.2f}, {endpoint[2]:.2f})"
             )
         else:
             self.get_logger().info(
-                f"Absolute mode: target=({self.absolute_target[0]:.2f}, {self.absolute_target[1]:.2f}, {self.absolute_target[2]:.2f})"
+                f"Absolute mode: target=({endpoint[0]:.2f}, {endpoint[1]:.2f}, {endpoint[2]:.2f})"
             )
 
         rate = self.create_rate(20)
@@ -593,8 +699,12 @@ class OffboardNode(Node):
                 self.destroy_rate(rate)
                 return result
 
-            # Calculate distance to goal
-            distance_vector = self.absolute_target - self.current_position
+            if duration > 0.0:
+                fraction = min(1.0, max(0.0, time_elapsed / duration))
+                self.absolute_target = trajectory_start + fraction * (endpoint - trajectory_start)
+
+            # Check the final endpoint, not the intermediate ramp position.
+            distance_vector = endpoint - self.current_position
             distance_to_goal = np.linalg.norm(distance_vector)
 
             # Calculate individual axis errors
@@ -612,7 +722,8 @@ class OffboardNode(Node):
 
             # Check if goal is reached
             if (
-                x_error <= goal.x_threshold
+                time_elapsed >= duration
+                and x_error <= goal.x_threshold
                 and y_error <= goal.y_threshold
                 and z_error <= goal.z_threshold
             ):

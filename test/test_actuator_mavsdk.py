@@ -47,6 +47,26 @@ def test_discovery_timeout_does_not_create_action(monkeypatch):
     factory.assert_not_called()
 
 
+def test_concurrent_geofence_and_actuator_discovery_share_connection(monkeypatch):
+    node = make_node()
+    node.mavsdk.first_autopilot.return_value = SimpleNamespace(
+        is_connected=AsyncMock(return_value=True)
+    )
+    factory = Mock()
+    monkeypatch.setattr(module, "ActionAsync", factory)
+
+    async def run():
+        await asyncio.gather(
+            module.ActuatorControlNode._connect(node),
+            module.ActuatorControlNode._connect(node),
+        )
+
+    asyncio.run(run())
+    node.mavsdk.add_any_connection.assert_awaited_once_with(node.address)
+    node.mavsdk.first_autopilot.assert_awaited_once_with(node.timeout)
+    factory.assert_called_once()
+
+
 @pytest.mark.parametrize("enabled,value", [(True, 1), (False, -1)])
 def test_actuator_indexes_and_values_are_preserved(enabled, value):
     action = SimpleNamespace(set_actuator=AsyncMock())
@@ -55,3 +75,21 @@ def test_actuator_indexes_and_values_are_preserved(enabled, value):
     assert action.set_actuator.await_count == 2
     action.set_actuator.assert_any_await(1, value)
     action.set_actuator.assert_any_await(3, value)
+
+
+def test_actuator_commands_do_not_overlap():
+    in_flight = 0
+    calls = []
+
+    async def set_actuator(index, value):
+        nonlocal in_flight
+        in_flight += 1
+        assert in_flight == 1, "Actuator MAVLink commands must await the previous acknowledgement"
+        calls.append((index, value))
+        await asyncio.sleep(0)
+        in_flight -= 1
+
+    node = SimpleNamespace(action=SimpleNamespace(set_actuator=set_actuator),
+                           actuation_indexes=[1, 2], ON=1, OFF=-1)
+    asyncio.run(module.ActuatorControlNode._actuate(node, True))
+    assert calls == [(1, 1), (2, 1)]

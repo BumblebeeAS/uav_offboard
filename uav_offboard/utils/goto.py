@@ -21,6 +21,7 @@ class GeneralGoal:
     y_threshold: float
     z_threshold: float
     relative: bool = True
+    duration: float = 0.0
 
     @staticmethod
     def from_position_goal(position_goal: GoToPosition.Goal) -> "GeneralGoal":
@@ -32,6 +33,7 @@ class GeneralGoal:
             y_threshold=position_goal.y_threshold,
             z_threshold=position_goal.z_threshold,
             relative=position_goal.relative,
+            duration=getattr(position_goal, "duration", 0.0),
         )
 
     @staticmethod

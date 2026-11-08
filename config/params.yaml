@@ -23,6 +23,8 @@
 
 /**/landing_target_pose_node:
   ros__parameters:
+    target_pose_topic: /uav/wide_a/asv/pose
+    max_pose_age: 0.3
     landing_target_pose_topic: /fmu/in/landing_target_pose
     vehicle_status_topic: /fmu/out/vehicle_status_v1
 
@@ -32,6 +34,8 @@
     px4_address: udpin://0.0.0.0:14540
     timeout: 5.0
     actuation_indexes: [1, 2]
+    publish_rc_kill: true
+    rc_switches_topic: /uav/rc/manual_control_switches
     publish_geofence: true
     geofence_topic: geofence
     geofence_refresh_interval: 1.0

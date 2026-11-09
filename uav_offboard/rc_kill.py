@@ -74,7 +74,6 @@ class RcKillPublisher:
         self.subscription = node.create_subscription(
             ManualControlSetpoint, '/fmu/out/manual_control_setpoint', self.on_manual,
             qos_profile_sensor_data)
-        self.manual_valid = False
         self.manual_received = None
         self.calibration = None
         self.config_received = None
@@ -82,10 +81,9 @@ class RcKillPublisher:
         self.last_state = None
 
     def on_manual(self, message):
-        self.manual_valid = (message.valid
-                             and message.data_source == ManualControlSetpoint.SOURCE_RC)
-        self.manual_received = time.monotonic()
-        if not self.manual_valid:
+        valid = message.valid and message.data_source == ManualControlSetpoint.SOURCE_RC
+        self.manual_received = time.monotonic() if valid else None
+        if not valid:
             self.publish(ManualControlSwitches.SWITCH_POS_NONE)
 
     def publish(self, state):
@@ -125,7 +123,7 @@ class RcKillPublisher:
         now = time.monotonic()
         valid = (self.calibration is not None and self.config_received is not None
                  and now-self.config_received <= 15.
-                 and self.manual_valid and self.manual_received is not None
+                 and self.manual_received is not None
                  and now-self.manual_received <= 2.)
         state = self.calibration.decode(fields) if valid else ManualControlSwitches.SWITCH_POS_NONE
         self.publish(state)

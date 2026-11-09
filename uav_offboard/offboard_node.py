@@ -588,7 +588,7 @@ class OffboardNode(Node):
                         self.publish_trajectory_setpoint()
                     result.message = "Spiral search canceled; holding current XY"
                     goal_handle.canceled()
-                    return SpiralSearch.Result(result=result)
+                    break
                 if not self._sweep_position_valid():
                     raise ValueError("Lost fresh valid position during spiral")
                 self.absolute_target = centre + path.offset(elapsed)
@@ -602,20 +602,21 @@ class OffboardNode(Node):
                         result.success = True
                         result.message = "Spiral search complete"
                         goal_handle.succeed()
-                        return SpiralSearch.Result(result=result)
+                        break
                     if elapsed > path.duration + request.settle_timeout:
                         raise ValueError("Spiral timed out settling at endpoint")
                 rate.sleep()
-            raise ValueError("Spiral interrupted by shutdown")
+            else:
+                raise ValueError("Spiral interrupted by shutdown")
         except Exception as exc:
             result.message = str(exc)
             self.get_logger().warning(result.message)
             goal_handle.abort()
-            return SpiralSearch.Result(result=result)
         finally:
             self.reset_internal_state()
             if rate is not None:
                 self.destroy_rate(rate)
+        return SpiralSearch.Result(result=result)
 
     def takeoff_goal_callback(self, goal_request: Takeoff.Goal):
         """Accept or reject a Takeoff goal"""

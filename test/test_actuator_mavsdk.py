@@ -68,28 +68,19 @@ def test_concurrent_geofence_and_actuator_discovery_share_connection(monkeypatch
 
 
 @pytest.mark.parametrize("enabled,value", [(True, 1), (False, -1)])
-def test_actuator_indexes_and_values_are_preserved(enabled, value):
-    action = SimpleNamespace(set_actuator=AsyncMock())
-    node = SimpleNamespace(action=action, actuation_indexes=[1, 3], ON=1, OFF=-1)
-    asyncio.run(module.ActuatorControlNode._actuate(node, enabled))
-    assert action.set_actuator.await_count == 2
-    action.set_actuator.assert_any_await(1, value)
-    action.set_actuator.assert_any_await(3, value)
-
-
-def test_actuator_commands_do_not_overlap():
+def test_actuator_commands_preserve_indexes_values_and_do_not_overlap(enabled, value):
     in_flight = 0
     calls = []
 
-    async def set_actuator(index, value):
+    async def set_actuator(index, command):
         nonlocal in_flight
         in_flight += 1
-        assert in_flight == 1, "Actuator MAVLink commands must await the previous acknowledgement"
-        calls.append((index, value))
+        assert in_flight == 1, "Commands must await the previous acknowledgement"
+        calls.append((index, command))
         await asyncio.sleep(0)
         in_flight -= 1
 
     node = SimpleNamespace(action=SimpleNamespace(set_actuator=set_actuator),
-                           actuation_indexes=[1, 2], ON=1, OFF=-1)
-    asyncio.run(module.ActuatorControlNode._actuate(node, True))
-    assert calls == [(1, 1), (2, 1)]
+                           actuation_indexes=[1, 3], ON=1, OFF=-1)
+    asyncio.run(module.ActuatorControlNode._actuate(node, enabled))
+    assert calls == [(1, value), (3, value)]

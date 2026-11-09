@@ -11,7 +11,6 @@ from uav_offboard.offboard_node import OffboardNode
 from uav_offboard.utils.goto import GeneralGoal
 
 
-
 def scenario(monkeypatch, duration, cancel=False):
     node = OffboardNode.__new__(OffboardNode)
     node.current_position = np.array([2., 3., -3.])

@@ -35,7 +35,6 @@ def setup_node(monkeypatch, mode='follow'):
     return node, handle
 
 
-
 @pytest.mark.parametrize('speed_limit', [1., 1.5])
 def test_spiral_radius_altitude_spacing_and_speed(speed_limit):
     path = SpiralPath(5., 1., speed_limit)

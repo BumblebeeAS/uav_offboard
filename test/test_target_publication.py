@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from rclpy.time import Time
 
 from uav_offboard.offboard_node import OffboardNode
 
@@ -22,11 +23,7 @@ def make_node(target):
                                          get_mode=lambda: dict(position=True, velocity=False,
                                              acceleration=False, attitude=False, body_rate=False,
                                              thrust_and_torque=False, direct_actuator=False))
-    time = SimpleNamespace(nanoseconds=1000000000, to_msg=lambda: None)
-    node.get_clock = Mock(return_value=SimpleNamespace(now=lambda: time))
-    # Use a real stamp message in published visualization poses.
-    from builtin_interfaces.msg import Time
-    time.to_msg = lambda: Time(sec=1)
+    node.get_clock = Mock(return_value=SimpleNamespace(now=lambda: Time(seconds=1)))
     return node
 
 

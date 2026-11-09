@@ -5,17 +5,11 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from rclpy.time import Time
 from bb_uav_msgs.action import GoToPosition
-from rclpy.action import GoalResponse
 from uav_offboard.offboard_node import OffboardNode
 from uav_offboard.utils.goto import GeneralGoal
 
-
-class ClockTime:
-    def __init__(self, seconds):
-        self.nanoseconds = int(seconds * 1e9)
-    def __sub__(self, other):
-        return SimpleNamespace(nanoseconds=self.nanoseconds - other.nanoseconds)
 
 
 def scenario(monkeypatch, duration, cancel=False):
@@ -26,7 +20,7 @@ def scenario(monkeypatch, duration, cancel=False):
     node.is_goal_active = False
     node.get_logger = Mock()
     now = [0.]
-    node.get_clock = lambda: SimpleNamespace(now=lambda: ClockTime(now[0]))
+    node.get_clock = lambda: SimpleNamespace(now=lambda: Time(seconds=now[0]))
     targets = []
     handle = Mock()
     handle.is_cancel_requested = False

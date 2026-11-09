@@ -2,6 +2,7 @@
 import asyncio
 import numpy as np
 import pytest
+from rclpy.time import Time
 from bb_uav_msgs.action import SpiralSearch
 
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ def setup_node(monkeypatch, mode='follow'):
     node._sweep_position_valid = Mock(return_value=True)
     node.get_logger = Mock()
     seconds = [0.]
-    node.get_clock = lambda: SimpleNamespace(now=lambda: FakeTime(seconds[0]))
+    node.get_clock = lambda: SimpleNamespace(now=lambda: Time(seconds=seconds[0]))
     def advance():
         if mode == 'follow':
             node.current_position = node.absolute_target.copy()
@@ -33,13 +34,6 @@ def setup_node(monkeypatch, mode='follow'):
     monkeypatch.setattr('uav_offboard.offboard_node.rclpy.ok', lambda: True)
     return node, handle
 
-
-class FakeTime:
-    def __init__(self, seconds):
-        self.nanoseconds = int(seconds * 1e9)
-
-    def __sub__(self, other):
-        return SimpleNamespace(nanoseconds=self.nanoseconds - other.nanoseconds)
 
 
 @pytest.mark.parametrize('speed_limit', [1., 1.5])

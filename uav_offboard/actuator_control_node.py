@@ -14,6 +14,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from uav_offboard.geofence import GeofencePublisher
+from uav_offboard.rc_kill import RcKillPublisher
 
 
 class ActuatorControlNode(Node):
@@ -72,7 +73,11 @@ class ActuatorControlNode(Node):
 
         self.geofence_publisher = None
         if self.declare_parameter("publish_geofence", True).value:
-            self.geofence_publisher = GeofencePublisher(self, self._geofence_drone)
+            self.geofence_publisher = GeofencePublisher(self, self._shared_drone)
+
+        self.rc_kill_publisher = None
+        if self.declare_parameter("publish_rc_kill", True).value:
+            self.rc_kill_publisher = RcKillPublisher(self, self._shared_drone)
 
         # MAVSDK
         self.mavsdk = Mavsdk(
@@ -97,6 +102,8 @@ class ActuatorControlNode(Node):
         self.running_tasks: Dict[str, Future] = {}
         if self.geofence_publisher is not None:
             self._run_async(self.geofence_publisher.run())
+        if self.rc_kill_publisher is not None:
+            self._run_async(self.rc_kill_publisher.run())
 
         self.get_logger().info("Actuator control node started")
 
@@ -128,7 +135,7 @@ class ActuatorControlNode(Node):
             self.get_logger().info("Connected to PX4")
             return True
 
-    async def _geofence_drone(self):
+    async def _shared_drone(self):
         await self._connect()
         return self.drone
 
@@ -136,15 +143,10 @@ class ActuatorControlNode(Node):
         return self.drone is not None and await self.drone.is_connected()
 
     async def _actuate(self, enable: bool):
-        tasks = [
-            self.action.set_actuator(
-                idx,
-                self.ON if enable else self.OFF,
-            )
-            for idx in self.actuation_indexes
-        ]
-
-        await asyncio.gather(*tasks)
+        # These calls share MAV_CMD_DO_SET_ACTUATOR. Await each command
+        # before issuing the next, rather than overlapping acknowledgements.
+        for idx in self.actuation_indexes:
+            await self.action.set_actuator(idx, self.ON if enable else self.OFF)
 
     # --------------------------- ROS Action callbacks ---------------------------
 
@@ -198,6 +200,10 @@ class ActuatorControlNode(Node):
                 goal_handle.abort()
                 return result
 
+            self.get_logger().info(
+                f"Setting actuators {list(self.actuation_indexes)}: "
+                f"enable={goal_handle.request.enable_actuation}"
+            )
             future = self._run_async(
                 self._actuate(goal_handle.request.enable_actuation)
             )
@@ -205,6 +211,7 @@ class ActuatorControlNode(Node):
 
             future.result(timeout=self.timeout)
 
+            self.get_logger().info("Actuator commands acknowledged (no position feedback)")
             result.success = True
             result.message = "Actuation successful"
             goal_handle.succeed()

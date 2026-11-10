@@ -6,13 +6,14 @@ from typing import Callable
 import numpy as np
 import rclpy
 from bb_uav_msgs.action import SpiralSearch, GoToPosition, Land, Takeoff
-from bb_uav_msgs.msg import GoToFeedback, GoToResult
+from bb_uav_msgs.msg import Geofence, GoToFeedback, GoToResult
 from bb_uav_msgs.srv import ChangeOffboardControlMode
 from geometry_msgs.msg import PoseStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_srvs.srv import Trigger
 
 from px4_msgs.msg import (
@@ -24,6 +25,7 @@ from px4_msgs.msg import (
     VehicleStatus,
 )
 from uav_offboard.utils.spiral_search import SpiralPath
+from uav_offboard.utils.geofence import bounded_spiral_radius
 from uav_offboard.utils.goto import GeneralGoal, is_acceleration_valid
 from uav_offboard.utils.offboard_mode import OffboardMode
 from uav_offboard.utils.qos_profiles import QOS_PROFILE_HOME, QOS_PROFILE_PUB, QOS_PROFILE_SUB
@@ -85,6 +87,18 @@ class OffboardNode(Node):
 
         # Create callback group for concurrent execution
         self.callback_group = ReentrantCallbackGroup()
+
+        self._geofence = None
+        self._local_reference = None
+        self.spiral_geofence_margin = self.declare_parameter('spiral_geofence_margin', 0.5).value
+        self.spiral_geofence_max_age = self.declare_parameter('spiral_geofence_max_age', 5.0).value
+        if (not math.isfinite(self.spiral_geofence_margin) or self.spiral_geofence_margin < 0
+                or not math.isfinite(self.spiral_geofence_max_age) or self.spiral_geofence_max_age <= 0):
+            raise ValueError('Invalid spiral geofence margin or maximum age')
+        self.geofence_sub = self.create_subscription(
+            Geofence, 'geofence', self.geofence_callback,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=ReliabilityPolicy.RELIABLE), callback_group=self.callback_group)
 
         # Subscribers
         self.home_sub = self.create_subscription(
@@ -266,6 +280,11 @@ class OffboardNode(Node):
 
     def local_position_callback(self, msg: VehicleLocalPosition):
         """Update current position from vehicle"""
+        self._local_reference = (
+            (msg.ref_lat, msg.ref_lon, msg.ref_timestamp)
+            if msg.xy_global and msg.ref_timestamp > 0
+            and math.isfinite(msg.ref_lat) and math.isfinite(msg.ref_lon)
+            and -90 <= msg.ref_lat <= 90 and -180 <= msg.ref_lon <= 180 else None)
         self.current_position = np.array([msg.x, msg.y, msg.z])
         self._position_received_at = time.monotonic()
         self.position_valid = bool(
@@ -544,6 +563,23 @@ class OffboardNode(Node):
         return (self.position_valid and received is not None
                 and time.monotonic() - received <= 1.0)
 
+    def geofence_callback(self, message):
+        self._geofence = message
+
+    def _fresh_spiral_geofence(self):
+        fence = self._geofence
+        if fence is None or self._local_reference is None:
+            raise ValueError('Spiral requires geofence data and a global PX4 local reference')
+        stamp = fence.stamp.sec + fence.stamp.nanosec * 1e-9
+        age = self.get_clock().now().nanoseconds * 1e-9 - stamp
+        if not 0 <= age <= self.spiral_geofence_max_age:
+            raise ValueError('Spiral geofence is stale or future-dated')
+        return fence
+
+    def _spiral_radius(self, fence, centre, requested):
+        return bounded_spiral_radius(
+            fence, self._local_reference, centre, requested, self.spiral_geofence_margin)
+
     def spiral_search_goal_callback(self, request):
         values = (request.radius, request.turn_spacing, request.speed,
                   request.settle_threshold, request.settle_timeout)
@@ -552,6 +588,11 @@ class OffboardNode(Node):
                 or not self._sweep_position_valid() or self.is_goal_active
                 or not self.offboard_mode.is_position):
             self.get_logger().warning("Rejecting spiral: invalid parameters/state or busy")
+            return GoalResponse.REJECT
+        try:
+            self._spiral_radius(self._fresh_spiral_geofence(), self.current_position, request.radius)
+        except ValueError as exc:
+            self.get_logger().warning(f'Rejecting spiral: {exc}')
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
@@ -565,7 +606,12 @@ class OffboardNode(Node):
             if not self._sweep_position_valid():
                 raise ValueError("Spiral requires fresh valid local position")
             centre = self.current_position.copy()
-            path = SpiralPath(request.radius, request.turn_spacing, request.speed)
+            fence = self._fresh_spiral_geofence()
+            reference = self._local_reference
+            radius = self._spiral_radius(fence, centre, request.radius)
+            self.get_logger().info(f'Spiral radius {radius:.2f} m (requested {request.radius:.2f} m); '
+                                   f'geofence margin {self.spiral_geofence_margin:.2f} m')
+            path = SpiralPath(radius, min(request.turn_spacing, 2 * radius), request.speed)
             endpoint = centre + path.offset(path.duration)
             start = self.get_clock().now()
             rate = self.create_rate(50)
@@ -591,6 +637,13 @@ class OffboardNode(Node):
                     break
                 if not self._sweep_position_valid():
                     raise ValueError("Lost fresh valid position during spiral")
+                current_fence = self._fresh_spiral_geofence()
+                if self._local_reference != reference:
+                    raise ValueError('PX4 local reference changed during spiral')
+                if current_fence is not fence:
+                    if self._spiral_radius(current_fence, centre, request.radius) < radius - 1e-6:
+                        raise ValueError('Updated geofence no longer contains the spiral')
+                    fence = current_fence
                 self.absolute_target = centre + path.offset(elapsed)
                 distance = float(np.linalg.norm(self.absolute_target - self.current_position))
                 goal_handle.publish_feedback(SpiralSearch.Feedback(feedback=GoToFeedback(
@@ -609,6 +662,9 @@ class OffboardNode(Node):
             else:
                 raise ValueError("Spiral interrupted by shutdown")
         except Exception as exc:
+            if self._sweep_position_valid():
+                self.absolute_target = self.current_position.copy()
+                self.publish_trajectory_setpoint()
             result.message = str(exc)
             self.get_logger().warning(result.message)
             goal_handle.abort()

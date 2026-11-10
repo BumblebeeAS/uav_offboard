@@ -7,6 +7,7 @@
   <maintainer email="shaolianghe0.0@gmail.com">monkescripts</maintainer>
   <license>TODO: License declaration</license>
   <depend>rclpy</depend>
+  <exec_depend>python3-pygeodesy-pip</exec_depend>
   <depend>bb_uav_msgs</depend>
   <depend>px4_msgs</depend>
   <depend>nav_msgs</depend>

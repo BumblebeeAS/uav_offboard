@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 from rclpy.time import Time
 from bb_uav_msgs.action import SpiralSearch
+from bb_uav_msgs.msg import Geofence, GeofenceCircle
+from geographic_msgs.msg import GeoPoint
 
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -19,6 +21,11 @@ def setup_node(monkeypatch, mode='follow'):
     node.position_valid = True
     node.offboard_mode = SimpleNamespace(is_position=True)
     node.is_goal_active = False
+    node._local_reference = (1.2809, 103.8555, 1)
+    node.spiral_geofence_margin = .5
+    node.spiral_geofence_max_age = 1000.
+    node._geofence = Geofence(circles=[GeofenceCircle(
+        center=GeoPoint(latitude=1.2809, longitude=103.8555), radius_m=100., inclusion=True)])
     node._sweep_position_valid = Mock(return_value=True)
     node.get_logger = Mock()
     seconds = [0.]

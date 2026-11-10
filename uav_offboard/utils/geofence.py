@@ -3,6 +3,7 @@
 import math
 
 import numpy as np
+
 from pygeodesy.ltp import LocalCartesian
 
 
@@ -20,7 +21,8 @@ def bounded_spiral_radius(fence, reference, centre, requested_radius, margin):
 
     def project(point):
         lat, lon = point.latitude, point.longitude
-        if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 180):
+        if not (math.isfinite(lat) and math.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
             raise ValueError('Invalid geofence coordinates')
         p = projection.forward(lat, lon, 0.)
         return np.array([p.y, p.x])  # ENU -> PX4 north/east.
@@ -30,7 +32,8 @@ def bounded_spiral_radius(fence, reference, centre, requested_radius, margin):
         if not math.isfinite(circle.radius_m) or circle.radius_m <= 0:
             raise ValueError('Invalid geofence circle radius')
         distance = float(np.linalg.norm(centre - project(circle.center)))
-        clearances.append(circle.radius_m - distance if circle.inclusion else distance - circle.radius_m)
+        clearances.append(
+            circle.radius_m - distance if circle.inclusion else distance - circle.radius_m)
     for polygon in fence.polygons:
         vertices = np.array([project(p) for p in polygon.vertices])
         if len(vertices) > 1 and np.array_equal(vertices[0], vertices[-1]):
@@ -44,7 +47,8 @@ def bounded_spiral_radius(fence, reference, centre, requested_radius, margin):
         if np.any(lengths <= 1e-12) or area <= 1e-9:
             raise ValueError('Degenerate geofence polygon')
         fractions = np.clip(np.sum((centre - vertices) * edges, axis=1) / lengths, 0., 1.)
-        distance = float(np.min(np.linalg.norm(centre - (vertices + fractions[:, None] * edges), axis=1)))
+        closest = vertices + fractions[:, None] * edges
+        distance = float(np.min(np.linalg.norm(centre - closest, axis=1)))
         inside = False
         x, y = centre
         for (ax, ay), (bx, by) in zip(vertices, ends):

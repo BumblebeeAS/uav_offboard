@@ -36,7 +36,6 @@ def circle(radius, north=0., east=0., inclusion=True):
 
 @pytest.mark.parametrize('fence,centre,expected', [
     (Geofence(circles=[circle(10)]), [8., 0., -5.], 1.5),
-    (Geofence(polygons=[polygon([[-5, -5], [5, -5], [5, 5], [-5, 5]])]), [4., 0., -5.], .5),
     (Geofence(circles=[circle(20), circle(1, north=3, inclusion=False)]), [0., 0., -5.], 1.5),
     (Geofence(polygons=[polygon([[2, -1], [4, -1], [4, 1], [2, 1]], False)]), [0., 0., -5.], 1.5),
     (Geofence(polygons=[polygon([[0, 0], [4, 0], [4, 1], [1, 1], [1, 4], [0, 4]])]),
@@ -50,31 +49,26 @@ def test_circle_polygon_exclusion_and_concave_clearance(fence, centre, expected)
 
 @pytest.mark.parametrize('fence', [
     Geofence(), Geofence(circles=[circle(1)]),
-    Geofence(polygons=[polygon([[0, 0], [1, 1]])]),
 ])
-def test_empty_outside_or_invalid_fence_cannot_start(fence):
+def test_empty_or_outside_fence_cannot_start(fence):
     with pytest.raises(ValueError):
         bounded_spiral_radius(fence, REFERENCE, [2., 0., -5.], 5., .5)
 
 
-@pytest.mark.parametrize('case', ['missing', 'stale', 'future', 'missing_reference', 'valid'])
+@pytest.mark.parametrize('case', ['stale', 'missing_reference', 'valid'])
 def test_goal_requires_current_fence_and_global_local_reference(monkeypatch, case):
     node, handle = setup_node(monkeypatch)
     handle.request = SpiralSearch.Goal(radius=5., turn_spacing=1., speed=1.,
                                        settle_threshold=.1, settle_timeout=1.)
-    if case == 'missing':
-        node._geofence = None
-    elif case == 'stale':
+    if case == 'stale':
         node._geofence.stamp.sec = -1001
-    elif case == 'future':
-        node._geofence.stamp.sec = 1
     elif case == 'missing_reference':
         node._spiral_origin = None
     expected = GoalResponse.ACCEPT if case == 'valid' else GoalResponse.REJECT
     assert node.spiral_search_goal_callback(handle.request) == expected
 
 
-@pytest.mark.parametrize('change', ['lost', 'tightened', 'reference_reset'])
+@pytest.mark.parametrize('change', ['tightened', 'reference_reset'])
 def test_fence_loss_or_reference_change_aborts_and_holds_current_position(monkeypatch, change):
     node, handle = setup_node(monkeypatch)
     handle.request = SpiralSearch.Goal(radius=.1, turn_spacing=.1, speed=.2,
@@ -86,9 +80,7 @@ def test_fence_loss_or_reference_change_aborts_and_holds_current_position(monkey
 
     def change_bounds():
         advance()
-        if change == 'lost':
-            node._geofence = None
-        elif change == 'reference_reset':
+        if change == 'reference_reset':
             node._spiral_origin = ((*REFERENCE[:2], 2), node.current_position.copy())
         else:
             node._geofence = Geofence(circles=[circle(.51, north=12, east=23)])

@@ -89,7 +89,7 @@ class OffboardNode(Node):
         self.callback_group = ReentrantCallbackGroup()
 
         self._geofence = None
-        self._local_reference = None
+        self._spiral_origin = None
         self.spiral_geofence_margin = self.declare_parameter('spiral_geofence_margin', 0.5).value
         self.spiral_geofence_max_age = self.declare_parameter('spiral_geofence_max_age', 5.0).value
         if (not math.isfinite(self.spiral_geofence_margin) or self.spiral_geofence_margin < 0
@@ -280,7 +280,7 @@ class OffboardNode(Node):
 
     def local_position_callback(self, msg: VehicleLocalPosition):
         """Update current position from vehicle"""
-        self._local_reference = (
+        reference = (
             (msg.ref_lat, msg.ref_lon, msg.ref_timestamp)
             if msg.xy_global and msg.ref_timestamp > 0
             and math.isfinite(msg.ref_lat) and math.isfinite(msg.ref_lon)
@@ -290,6 +290,9 @@ class OffboardNode(Node):
         self.position_valid = bool(
             msg.xy_valid and msg.z_valid and np.isfinite(self.current_position).all()
         )
+        # One assignment freezes matching coordinates/reference across callbacks.
+        self._spiral_origin = ((reference, self.current_position.copy())
+                               if reference is not None and self.position_valid else None)
 
     def home_position_callback(self, msg: HomePosition):
         """Track PX4 home without changing an already resolved target."""
@@ -567,18 +570,18 @@ class OffboardNode(Node):
         self._geofence = message
 
     def _fresh_spiral_geofence(self):
-        fence = self._geofence
-        if fence is None or self._local_reference is None:
+        fence, origin = self._geofence, self._spiral_origin
+        if fence is None or origin is None:
             raise ValueError('Spiral requires geofence data and a global PX4 local reference')
         stamp = fence.stamp.sec + fence.stamp.nanosec * 1e-9
         age = self.get_clock().now().nanoseconds * 1e-9 - stamp
         if not 0 <= age <= self.spiral_geofence_max_age:
             raise ValueError('Spiral geofence is stale or future-dated')
-        return fence
+        return fence, origin
 
-    def _spiral_radius(self, fence, centre, requested):
+    def _spiral_radius(self, fence, reference, centre, requested):
         return bounded_spiral_radius(
-            fence, self._local_reference, centre, requested, self.spiral_geofence_margin)
+            fence, reference, centre, requested, self.spiral_geofence_margin)
 
     def spiral_search_goal_callback(self, request):
         values = (request.radius, request.turn_spacing, request.speed,
@@ -590,7 +593,8 @@ class OffboardNode(Node):
             self.get_logger().warning("Rejecting spiral: invalid parameters/state or busy")
             return GoalResponse.REJECT
         try:
-            self._spiral_radius(self._fresh_spiral_geofence(), self.current_position, request.radius)
+            fence, (reference, centre) = self._fresh_spiral_geofence()
+            self._spiral_radius(fence, reference, centre, request.radius)
         except ValueError as exc:
             self.get_logger().warning(f'Rejecting spiral: {exc}')
             return GoalResponse.REJECT
@@ -605,10 +609,8 @@ class OffboardNode(Node):
         try:
             if not self._sweep_position_valid():
                 raise ValueError("Spiral requires fresh valid local position")
-            centre = self.current_position.copy()
-            fence = self._fresh_spiral_geofence()
-            reference = self._local_reference
-            radius = self._spiral_radius(fence, centre, request.radius)
+            fence, (reference, centre) = self._fresh_spiral_geofence()
+            radius = self._spiral_radius(fence, reference, centre, request.radius)
             self.get_logger().info(f'Spiral radius {radius:.2f} m (requested {request.radius:.2f} m); '
                                    f'geofence margin {self.spiral_geofence_margin:.2f} m')
             path = SpiralPath(radius, min(request.turn_spacing, 2 * radius), request.speed)
@@ -637,11 +639,11 @@ class OffboardNode(Node):
                     break
                 if not self._sweep_position_valid():
                     raise ValueError("Lost fresh valid position during spiral")
-                current_fence = self._fresh_spiral_geofence()
-                if self._local_reference != reference:
+                current_fence, (current_reference, _) = self._fresh_spiral_geofence()
+                if current_reference != reference:
                     raise ValueError('PX4 local reference changed during spiral')
                 if current_fence is not fence:
-                    if self._spiral_radius(current_fence, centre, request.radius) < radius - 1e-6:
+                    if self._spiral_radius(current_fence, reference, centre, request.radius) < radius - 1e-6:
                         raise ValueError('Updated geofence no longer contains the spiral')
                     fence = current_fence
                 self.absolute_target = centre + path.offset(elapsed)

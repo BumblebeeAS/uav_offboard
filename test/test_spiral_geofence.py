@@ -69,7 +69,7 @@ def test_goal_requires_current_fence_and_global_local_reference(monkeypatch, cas
     elif case == 'future':
         node._geofence.stamp.sec = 1
     elif case == 'missing_reference':
-        node._local_reference = None
+        node._spiral_origin = None
     expected = GoalResponse.ACCEPT if case == 'valid' else GoalResponse.REJECT
     assert node.spiral_search_goal_callback(handle.request) == expected
 
@@ -89,7 +89,7 @@ def test_fence_loss_or_reference_change_aborts_and_holds_current_position(monkey
         if change == 'lost':
             node._geofence = None
         elif change == 'reference_reset':
-            node._local_reference = (*REFERENCE[:2], 2)
+            node._spiral_origin = ((*REFERENCE[:2], 2), node.current_position.copy())
         else:
             node._geofence = Geofence(circles=[circle(.51, north=12, east=23)])
     node.create_rate.return_value.sleep = change_bounds

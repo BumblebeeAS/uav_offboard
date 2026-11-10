@@ -21,7 +21,7 @@ def setup_node(monkeypatch, mode='follow'):
     node.position_valid = True
     node.offboard_mode = SimpleNamespace(is_position=True)
     node.is_goal_active = False
-    node._local_reference = (1.2809, 103.8555, 1)
+    node._spiral_origin = ((1.2809, 103.8555, 1), node.current_position.copy())
     node.spiral_geofence_margin = .5
     node.spiral_geofence_max_age = 1000.
     node._geofence = Geofence(circles=[GeofenceCircle(

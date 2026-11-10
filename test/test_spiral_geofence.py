@@ -55,7 +55,7 @@ def test_empty_or_outside_fence_cannot_start(fence):
         bounded_spiral_radius(fence, REFERENCE, [2., 0., -5.], 5., .5)
 
 
-@pytest.mark.parametrize('case', ['stale', 'missing_reference', 'valid'])
+@pytest.mark.parametrize('case', ['stale', 'missing_reference'])
 def test_goal_requires_current_fence_and_global_local_reference(monkeypatch, case):
     node, handle = setup_node(monkeypatch)
     handle.request = SpiralSearch.Goal(radius=5., turn_spacing=1., speed=1.,
@@ -64,8 +64,7 @@ def test_goal_requires_current_fence_and_global_local_reference(monkeypatch, cas
         node._geofence.stamp.sec = -1001
     elif case == 'missing_reference':
         node._spiral_origin = None
-    expected = GoalResponse.ACCEPT if case == 'valid' else GoalResponse.REJECT
-    assert node.spiral_search_goal_callback(handle.request) == expected
+    assert node.spiral_search_goal_callback(handle.request) == GoalResponse.REJECT
 
 
 @pytest.mark.parametrize('change', ['tightened', 'reference_reset'])

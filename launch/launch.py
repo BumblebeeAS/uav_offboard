@@ -22,12 +22,6 @@ def generate_launch_description():
         ),
         Node(
             package="uav_offboard",
-            executable="landing_target_pose_node",
-            name="landing_target_pose_node",
-            parameters=[config],
-        ),
-        Node(
-            package="uav_offboard",
             executable="actuator_control_node",
             name="actuator_control_node",
             parameters=[config],

@@ -12,6 +12,8 @@
     home_position_topic: /fmu/out/home_position_v1
     vehicle_status_topic: /fmu/out/vehicle_status_v1
     acceleration_control_topic: /uav/acceleration_control
+    spiral_geofence_margin: 1.0
+    spiral_geofence_max_age: 5.0
 
 /**/home_odometry_node:
   ros__parameters:

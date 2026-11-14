@@ -62,6 +62,7 @@ def test_callbacks_gate_output_and_follow_home_changes():
     node = SimpleNamespace(
         home=None, local_frame='odom_ned', home_frame='home_ned',
         publisher=Mock(), broadcaster=Mock(),
+        pending_transform=None,
         get_logger=Mock(return_value=Mock(spec_set=RcutilsLogger)),
     )
     raw = sample_odom()
@@ -82,3 +83,26 @@ def test_callbacks_gate_output_and_follow_home_changes():
     raw.header.frame_id = 'odom_ned'
     HomeOdometryNode.odom_callback(node, raw)
     assert node.publisher.publish.call_count == 2
+
+
+def test_tf_uses_latest_sample_without_replaying_and_stops_on_invalid_home():
+    node = SimpleNamespace(
+        home=HomePosition(x=10.0, valid_lpos=True),
+        local_frame='odom_ned', home_frame='home_ned',
+        publisher=Mock(), broadcaster=Mock(), pending_transform=None,
+    )
+    raw = sample_odom()
+    HomeOdometryNode.odom_callback(node, raw)
+    raw.header.stamp.sec += 1
+    HomeOdometryNode.odom_callback(node, raw)
+    node.broadcaster.sendTransform.assert_not_called()
+    HomeOdometryNode.publish_tf(node)
+    tf = node.broadcaster.sendTransform.call_args.args[0]
+    assert tf.header.stamp == raw.header.stamp
+    assert tf.transform.translation.x == 10.0
+    HomeOdometryNode.publish_tf(node)
+    assert node.broadcaster.sendTransform.call_count == 1
+    HomeOdometryNode.odom_callback(node, raw)
+    HomeOdometryNode.home_callback(node, HomePosition(valid_lpos=False))
+    HomeOdometryNode.publish_tf(node)
+    assert node.broadcaster.sendTransform.call_count == 1

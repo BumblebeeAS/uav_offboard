@@ -5,8 +5,12 @@ from typing import Callable
 
 import numpy as np
 import rclpy
-from bb_uav_msgs.action import SpiralSearch, GoToPosition, Land, Takeoff
+from bb_uav_msgs.action import CircleSweep, SpiralSearch, GoToPosition, Land, Takeoff
 from bb_uav_msgs.msg import Geofence, GoToFeedback, GoToResult
+from frames.utils.geofence import DEFAULT_GEOFENCE_MARGIN, geofence_region, spiral_region
+from pygeodesy.ltp import LocalCartesian
+from shapely.affinity import affine_transform
+from shapely.geometry import LineString, Point
 from bb_uav_msgs.srv import ChangeOffboardControlMode
 from geometry_msgs.msg import PoseStamped, Vector3
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -24,8 +28,8 @@ from px4_msgs.msg import (
     VehicleLocalPosition,
     VehicleStatus,
 )
+from uav_offboard.utils.circle_sweep import sweep_offset, sweep_total_duration
 from uav_offboard.utils.spiral_search import SpiralPath
-from uav_offboard.utils.geofence import bounded_spiral_radius
 from uav_offboard.utils.goto import GeneralGoal, is_acceleration_valid
 from uav_offboard.utils.offboard_mode import OffboardMode
 from uav_offboard.utils.qos_profiles import QOS_PROFILE_HOME, QOS_PROFILE_PUB, QOS_PROFILE_SUB
@@ -88,10 +92,10 @@ class OffboardNode(Node):
         # Create callback group for concurrent execution
         self.callback_group = ReentrantCallbackGroup()
 
-        self._geofence = None
-        self._spiral_origin = None
-        self.spiral_geofence_margin = self.declare_parameter('spiral_geofence_margin', 0.5).value
-        self.spiral_geofence_max_age = self.declare_parameter('spiral_geofence_max_age', 5.0).value
+        self._geofence = self._spiral_origin = None
+        self.spiral_geofence_margin = self.declare_parameter(
+            'spiral_geofence_margin', DEFAULT_GEOFENCE_MARGIN).value
+        self.spiral_geofence_max_age = self.declare_parameter('spiral_geofence_max_age', 5.).value
         if (not math.isfinite(self.spiral_geofence_margin) or self.spiral_geofence_margin < 0
                 or not math.isfinite(self.spiral_geofence_max_age) or self.spiral_geofence_max_age <= 0):
             raise ValueError('Invalid spiral geofence margin or maximum age')
@@ -173,6 +177,13 @@ class OffboardNode(Node):
             "~/go_to_position",
             execute_callback=self.execute_goto_position_callback,
             goal_callback=self.goto_position_goal_callback,
+            cancel_callback=self.cancel_callback,
+            callback_group=self.callback_group,
+        )
+        self._circle_sweep_action_server = ActionServer(
+            self, CircleSweep, "~/circle_sweep",
+            execute_callback=self.execute_circle_sweep_callback,
+            goal_callback=self.circle_sweep_goal_callback,
             cancel_callback=self.cancel_callback,
             callback_group=self.callback_group,
         )
@@ -280,19 +291,19 @@ class OffboardNode(Node):
 
     def local_position_callback(self, msg: VehicleLocalPosition):
         """Update current position from vehicle"""
-        reference = (
-            (msg.ref_lat, msg.ref_lon, msg.ref_timestamp)
-            if msg.xy_global and msg.ref_timestamp > 0
-            and math.isfinite(msg.ref_lat) and math.isfinite(msg.ref_lon)
-            and -90 <= msg.ref_lat <= 90 and -180 <= msg.ref_lon <= 180 else None)
         self.current_position = np.array([msg.x, msg.y, msg.z])
         self._position_received_at = time.monotonic()
         self.position_valid = bool(
             msg.xy_valid and msg.z_valid and np.isfinite(self.current_position).all()
         )
-        # One assignment freezes matching coordinates/reference across callbacks.
+        reference = (msg.ref_lat, msg.ref_lon, msg.ref_timestamp,
+                     msg.xy_reset_counter, msg.z_reset_counter)
+        valid_reference = (msg.xy_global and msg.ref_timestamp > 0
+                           and math.isfinite(msg.ref_lat) and math.isfinite(msg.ref_lon)
+                           and -90 <= msg.ref_lat <= 90 and -180 <= msg.ref_lon <= 180)
+        # Freeze matching coordinates/reference together across callbacks.
         self._spiral_origin = ((reference, self.current_position.copy())
-                               if reference is not None and self.position_valid else None)
+                               if valid_reference and self.position_valid else None)
 
     def home_position_callback(self, msg: HomePosition):
         """Track PX4 home without changing an already resolved target."""
@@ -566,22 +577,123 @@ class OffboardNode(Node):
         return (self.position_valid and received is not None
                 and time.monotonic() - received <= 1.0)
 
+    def hold_current_position(self, altitude=None):
+        """Replace the last moving target before acknowledging cancellation."""
+        if (self._sweep_position_valid()
+                and getattr(self, 'nav_state', None) == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+                and getattr(self, 'arming_state', None) == VehicleStatus.ARMING_STATE_ARMED):
+            self.absolute_target = self.current_position.copy()
+            if altitude is not None:
+                self.absolute_target[2] = altitude
+            self.publish_trajectory_setpoint()
+
+    def circle_sweep_goal_callback(self, request):
+        values = (request.radius, request.duration,
+                  request.return_threshold, request.return_timeout)
+        if (not all(math.isfinite(v) and v > 0.0 for v in values)
+                or not self._sweep_position_valid() or self.is_goal_active
+                or not self.offboard_mode.is_position):
+            self.get_logger().warning("Rejecting sweep: invalid parameters/state or busy")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    async def execute_circle_sweep_callback(self, goal_handle):
+        """Run one timed circle, then require measured arrival at its endpoint.
+
+        Freeze the current position once. Offsets are in horizontal local
+        NED, so changing odometry never shifts the circle centre or its altitude.
+        Use the normal action cancellation path rather than a competing PX4
+        setpoint publisher in the tree process.
+        """
+        request = goal_handle.request
+        result = GoToResult(success=False)
+        rate = None
+        self.is_goal_active = True
+        try:
+            if not self._sweep_position_valid():
+                raise ValueError("Sweep requires fresh valid local position")
+            endpoint = self.current_position.copy()
+            centre = endpoint.copy()
+            if request.start_on_circle:
+                # The caller already reached the +north edge with a normal goto.
+                # Freeze geometry at acceptance so odometry updates cannot move it.
+                centre[0] -= request.radius
+            self.absolute_target = endpoint.copy()
+            start = self.get_clock().now()
+            trajectory_duration = sweep_total_duration(
+                request.radius, request.duration, request.start_on_circle)
+            rate = self.create_rate(50)
+            self.get_logger().info(
+                f"Circle sweep: radius={request.radius:.3f} m, "
+                f"revolution={request.duration:.2f} s, centre={centre.tolist()}, "
+                f"start_on_circle={request.start_on_circle}")
+            while rclpy.ok():
+                elapsed = (self.get_clock().now() - start).nanoseconds / 1e9
+                result.time_elapsed = elapsed
+                result.final_x, result.final_y, result.final_z = self.feedback_position
+                if goal_handle.is_cancel_requested:
+                    result.message = "Circle sweep canceled"
+                    goal_handle.canceled()
+                    return CircleSweep.Result(result=result)
+                if not self._sweep_position_valid():
+                    raise ValueError("Lost fresh valid position during circle sweep")
+                self.absolute_target = centre + sweep_offset(
+                    elapsed, request.radius, request.duration, request.start_on_circle)
+                distance = float(np.linalg.norm(self.absolute_target - self.current_position))
+                # Report tracking error without aborting on normal controller lag.
+                # Completion still requires a measured return to the frozen endpoint.
+                goal_handle.publish_feedback(CircleSweep.Feedback(feedback=GoToFeedback(
+                    current_x=float(self.feedback_position[0]),
+                    current_y=float(self.feedback_position[1]),
+                    current_z=float(self.feedback_position[2]), distance_to_goal=distance)))
+                if elapsed >= trajectory_duration:
+                    if np.all(np.abs(self.current_position - endpoint) <= request.return_threshold):
+                        result.success = True
+                        result.message = "Circle sweep complete; returned to endpoint"
+                        goal_handle.succeed()
+                        return CircleSweep.Result(result=result)
+                    if elapsed > trajectory_duration + request.return_timeout:
+                        raise ValueError("Circle sweep timed out returning to endpoint")
+                rate.sleep()
+            raise ValueError("Circle sweep interrupted by shutdown")
+        except Exception as exc:
+            result.message = str(exc)
+            self.get_logger().warning(result.message)
+            goal_handle.abort()
+            return CircleSweep.Result(result=result)
+        finally:
+            self.reset_internal_state()
+            if rate is not None:
+                self.destroy_rate(rate)
+
     def geofence_callback(self, message):
         self._geofence = message
 
     def _fresh_spiral_geofence(self):
         fence, origin = self._geofence, self._spiral_origin
         if fence is None or origin is None:
-            raise ValueError('Spiral requires geofence data and a global PX4 local reference')
+            raise ValueError('Spiral requires a geofence and a valid global PX4 local reference')
         stamp = fence.stamp.sec + fence.stamp.nanosec * 1e-9
         age = self.get_clock().now().nanoseconds * 1e-9 - stamp
         if not 0 <= age <= self.spiral_geofence_max_age:
             raise ValueError('Spiral geofence is stale or future-dated')
         return fence, origin
 
-    def _spiral_radius(self, fence, reference, centre, requested):
-        return bounded_spiral_radius(
-            fence, reference, centre, requested, self.spiral_geofence_margin)
+    def _spiral_region(self, fence, reference, centre):
+        projection = LocalCartesian(reference[0], reference[1], 0.)
+        region = geofence_region(fence, projection)
+        # PX4 positions are NED; the shared fence geometry is ENU.
+        return spiral_region(region, Point(centre[1], centre[0]), self.spiral_geofence_margin)
+
+    def _spiral_path(self, request, fence, reference, centre):
+        safe = self._spiral_region(fence, reference, centre)
+        relative = affine_transform(safe, [0., 1., 1., 0., -centre[0], -centre[1]])
+        path = SpiralPath(request.radius, request.turn_spacing, request.speed, region=relative)
+        route = affine_transform(LineString(path.points[:, :2]),
+                                 [0., 1., 1., 0., centre[1], centre[0]])
+        if not safe.covers(route):
+            raise ValueError('Planned spiral violates the geofence clearance')
+        return path, safe, route
 
     def spiral_search_goal_callback(self, request):
         values = (request.radius, request.turn_spacing, request.speed,
@@ -594,7 +706,7 @@ class OffboardNode(Node):
             return GoalResponse.REJECT
         try:
             fence, (reference, centre) = self._fresh_spiral_geofence()
-            self._spiral_radius(fence, reference, centre, request.radius)
+            self._spiral_region(fence, reference, centre)
         except ValueError as exc:
             self.get_logger().warning(f'Rejecting spiral: {exc}')
             return GoalResponse.REJECT
@@ -610,16 +722,14 @@ class OffboardNode(Node):
             if not self._sweep_position_valid():
                 raise ValueError("Spiral requires fresh valid local position")
             fence, (reference, centre) = self._fresh_spiral_geofence()
-            radius = self._spiral_radius(fence, reference, centre, request.radius)
-            self.get_logger().info(f'Spiral radius {radius:.2f} m (requested {request.radius:.2f} m); '
-                                   f'geofence margin {self.spiral_geofence_margin:.2f} m')
-            path = SpiralPath(radius, min(request.turn_spacing, 2 * radius), request.speed)
+            path, safe_region, route = self._spiral_path(request, fence, reference, centre)
             endpoint = centre + path.offset(path.duration)
             start = self.get_clock().now()
             rate = self.create_rate(50)
             self.absolute_target = centre.copy()
             self.get_logger().info(
-                f"Spiral search: radius={request.radius:g} m, spacing={request.turn_spacing:g} m, "
+                f"Spiral search: radius={request.radius:g} m, clipped={path.clipped}, "
+                f"geofence clearance={self.spiral_geofence_margin:g} m, spacing={request.turn_spacing:g} m, "
                 f"speed<={request.speed:g} m/s, duration={path.duration:.1f} s")
             while rclpy.ok():
                 elapsed = (self.get_clock().now() - start).nanoseconds / 1e9
@@ -628,12 +738,8 @@ class OffboardNode(Node):
                 if goal_handle.is_cancel_requested:
                     # Replace the moving target with measured XY before acknowledging.
                     # Keep the search altitude; don't continue toward an old spiral point.
-                    if (self._sweep_position_valid()
-                            and self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
-                            and self.arming_state == VehicleStatus.ARMING_STATE_ARMED):
-                        self.absolute_target = self.current_position.copy()
-                        self.absolute_target[2] = centre[2]
-                        self.publish_trajectory_setpoint()
+                    origin = self._spiral_origin
+                    self.hold_current_position(altitude=centre[2] if origin and origin[0] == reference else None)
                     result.message = "Spiral search canceled; holding current XY"
                     goal_handle.canceled()
                     break
@@ -641,9 +747,10 @@ class OffboardNode(Node):
                     raise ValueError("Lost fresh valid position during spiral")
                 current_fence, (current_reference, _) = self._fresh_spiral_geofence()
                 if current_reference != reference:
-                    raise ValueError('PX4 local reference changed during spiral')
+                    raise ValueError('PX4 position reference/reset changed during spiral')
                 if current_fence is not fence:
-                    if self._spiral_radius(current_fence, reference, centre, request.radius) < radius - 1e-6:
+                    safe_region = self._spiral_region(current_fence, reference, centre)
+                    if not safe_region.covers(route):
                         raise ValueError('Updated geofence no longer contains the spiral')
                     fence = current_fence
                 self.absolute_target = centre + path.offset(elapsed)
@@ -664,11 +771,9 @@ class OffboardNode(Node):
             else:
                 raise ValueError("Spiral interrupted by shutdown")
         except Exception as exc:
-            if self._sweep_position_valid():
-                self.absolute_target = self.current_position.copy()
-                self.publish_trajectory_setpoint()
             result.message = str(exc)
             self.get_logger().warning(result.message)
+            self.hold_current_position()
             goal_handle.abort()
         finally:
             self.reset_internal_state()
@@ -748,6 +853,7 @@ class OffboardNode(Node):
             # Calculate time elapsed
             time_elapsed = (self.get_clock().now() - start_time).nanoseconds / 1e9
             if goal_handle.is_cancel_requested:
+                self.hold_current_position()
                 goal_handle.canceled()
                 result = GoToResult()
                 result.success = False

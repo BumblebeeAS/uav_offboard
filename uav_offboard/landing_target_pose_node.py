@@ -5,6 +5,10 @@ from rclpy.time import Time
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
+from geometry_msgs.msg import PoseStamped
+from rclpy.qos import qos_profile_sensor_data
+from tf2_geometry_msgs import do_transform_pose_stamped
+from math import isfinite
 
 from px4_msgs.msg import LandingTargetPose, VehicleStatus
 from uav_offboard.utils.qos_profiles import QOS_PROFILE_PUB, QOS_PROFILE_SUB
@@ -42,8 +46,17 @@ class LandingTargetPoseNode(Node):
         )
 
         # Initialize TF2 buffer and listener
+        target_pose_topic = self.declare_parameter('target_pose_topic', '').value
+        self.max_pose_age = self.declare_parameter('max_pose_age', 0.3).value
+        if not isfinite(self.max_pose_age) or self.max_pose_age <= 0:
+            raise ValueError('max_pose_age must be finite and positive')
+        self.use_pose_topic = bool(target_pose_topic)
+        self.target_pose = None
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self, static_only=self.use_pose_topic)
+        if self.use_pose_topic:
+            self.pose_sub = self.create_subscription(
+                PoseStamped, target_pose_topic, self.pose_callback, qos_profile_sensor_data)
 
         self.status_sub = self.create_subscription(
             VehicleStatus,
@@ -69,6 +82,32 @@ class LandingTargetPoseNode(Node):
         self.nav_state = msg.nav_state
         self.arming_state = msg.arming_state
 
+    def pose_callback(self, msg: PoseStamped):
+        self.target_pose = msg
+
+    def get_target_position(self):
+        """Return a fresh stamped pose in FRD, using fixed camera extrinsics."""
+        if self.use_pose_topic:
+            pose = self.target_pose
+            if pose is None or not pose.header.frame_id:
+                return None
+            stamp = Time.from_msg(pose.header.stamp)
+            age = (self.get_clock().now() - stamp).nanoseconds / 1e9
+            if stamp.nanoseconds <= 0 or not 0 <= age <= self.max_pose_age:
+                return None
+            if pose.header.frame_id != self.source_frame:
+                transform = self.tf_buffer.lookup_transform(
+                    self.source_frame, pose.header.frame_id, stamp)
+                pose = do_transform_pose_stamped(pose, transform)
+            position = pose.pose.position
+            if not all(isfinite(value) for value in (position.x, position.y, position.z)):
+                return None
+            return position, stamp.nanoseconds // 1000
+        transform = self.tf_buffer.lookup_transform(
+            self.source_frame, self.target_frame, Time(),
+            timeout=Duration(nanoseconds=100_000_000))
+        return transform.transform.translation, int(self.get_clock().now().nanoseconds / 1000)
+
     def publish_landing_target_pose(self):
         if (
             self.nav_state != VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND
@@ -77,22 +116,19 @@ class LandingTargetPoseNode(Node):
             return
 
         try:
-            # Look up the transform from base_link_frd to aruco_board
-            transform = self.tf_buffer.lookup_transform(
-                self.source_frame,
-                self.target_frame,
-                Time(),
-                timeout=Duration(nanoseconds=100_000_000),  # 0.1 seconds
-            )
+            target = self.get_target_position()
+            if target is None:
+                return
+            position, timestamp_us = target
 
             # Extract position from transform (NED/FRD frame)
             # In FRD: X = Forward, Y = Right, Z = Down
-            x_rel = transform.transform.translation.x
-            y_rel = transform.transform.translation.y
-            z_rel = transform.transform.translation.z
+            x_rel = position.x
+            y_rel = position.y
+            z_rel = position.z
 
             msg = LandingTargetPose()
-            msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+            msg.timestamp = timestamp_us
             msg.is_static = True
             msg.rel_pos_valid = True
             msg.rel_vel_valid = False  # We don't compute velocity

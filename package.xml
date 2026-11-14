@@ -7,14 +7,15 @@
   <maintainer email="shaolianghe0.0@gmail.com">monkescripts</maintainer>
   <license>TODO: License declaration</license>
   <depend>rclpy</depend>
-  <exec_depend>python3-pygeodesy-pip</exec_depend>
-  <exec_depend>python3-shapely</exec_depend>
   <depend>bb_uav_msgs</depend>
   <depend>px4_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>geographic_msgs</depend>
   <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <exec_depend>frames</exec_depend>
+  <exec_depend>python3-pygeodesy-pip</exec_depend>
   
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
